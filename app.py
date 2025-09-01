@@ -229,6 +229,11 @@ def compare_to_notes(all_texts, description):
         return f"Content Mismatch: The following expected keywords from your notes were NOT found in the video text: {', '.join(missing)}"
     return "No obvious content mismatches between your notes and the video text detected."
 
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def download_video_from_url_cached(url):
+    """Download video from URL with caching (YouTube, TikTok, or direct link) and return local path or error message."""
+    return download_video_from_url(url)
+
 def download_video_from_url(url):
     """Download video from URL (YouTube, TikTok, or direct link) and return local path or error message."""
     try:
@@ -328,8 +333,8 @@ def get_video_analysis_results_from_url(video_url, description):
     temp_video_path = None
     
     try:
-        # First, download the video to a temporary file
-        temp_video_path, error_msg = download_video_from_url(video_url)
+        # First, download the video to a temporary file (with caching)
+        temp_video_path, error_msg = download_video_from_url_cached(video_url)
         
         if error_msg:
             # Return error in results instead of raising exception
