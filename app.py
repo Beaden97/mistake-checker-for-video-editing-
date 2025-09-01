@@ -12,8 +12,16 @@ import yt_dlp
 from urllib.parse import urlparse
 import re
 
+from app_theme import apply_base_theme, apply_runtime_theme_controls
+
+# Apply theme before any Streamlit output
+apply_base_theme(page_title="Mistake Checker", page_icon=None)
+_appearance = apply_runtime_theme_controls()
+
 # --- INSTRUCTIONS SECTION ---
-st.title("AI TikTok Video QA (Deep Learning, Web-Based, No Install)")
+_default_hero = "AI TikTok Video QA (Deep Learning, Web-Based, No Install)"
+hero_title = (_appearance or {}).get("hero_title", _default_hero)
+st.title(hero_title)
 st.markdown("""
 #### How to Use This App
 1. **Upload your TikTok video below.**
