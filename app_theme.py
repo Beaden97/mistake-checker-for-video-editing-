@@ -39,6 +39,12 @@ def apply_base_theme(
     if _CSS_PATH.exists():
         css = _CSS_PATH.read_text(encoding="utf-8")
         st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+    
+    # Load targeted contrast CSS for accessibility
+    contrast_css_path = _ASSETS_DIR / "contrast-targeted.css"
+    if contrast_css_path.exists():
+        contrast_css = contrast_css_path.read_text(encoding="utf-8")
+        st.markdown(f"<style>{contrast_css}</style>", unsafe_allow_html=True)
 
     # Hide default Streamlit chrome (non-destructive)
     st.markdown(
