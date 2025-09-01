@@ -8,7 +8,7 @@ from paddleocr import PaddleOCR
 from spellchecker import SpellChecker
 import os
 import requests
-from pytube import YouTube
+import yt_dlp
 from urllib.parse import urlparse
 import re
 
@@ -39,6 +39,36 @@ reference_url = st.text_input(
     "Enter a reference video URL (YouTube or direct video link):",
     placeholder="https://www.youtube.com/watch?v=... or https://example.com/video.mp4",
     help="Provide a URL to a reference video to compare formatting and features with your uploaded video."
+)
+
+# --- ANALYSIS SETTINGS SIDEBAR ---
+st.sidebar.header("⚙️ Analysis Settings")
+
+st.sidebar.subheader("Scene Cut Detection")
+cut_sensitivity = st.sidebar.selectbox(
+    "Cut Detection Sensitivity",
+    ["low", "medium", "high"],
+    index=1,  # Default to medium
+    help="Higher sensitivity detects more cuts but may produce false positives"
+)
+
+st.sidebar.subheader("Text Analysis")
+bleed_tolerance = st.sidebar.slider(
+    "Bleed Tolerance (seconds)",
+    min_value=0.1,
+    max_value=1.0,
+    value=0.25,
+    step=0.05,
+    help="Maximum time text can linger after a cut before being flagged as bleeding"
+)
+
+flash_min_duration = st.sidebar.slider(
+    "Flash Min Duration (seconds)",
+    min_value=0.1,
+    max_value=1.0,
+    value=0.25,
+    step=0.05,
+    help="Minimum duration for text to not be considered flashing"
 )
 
 # --- SUBMIT BUTTON ---
@@ -85,16 +115,94 @@ def analyze_aspect_ratio(video_path):
     cap.release()
     return mistake
 
+def detect_scene_cuts(video_path, sensitivity='medium', is_photo_comp=False):
+    """Lightweight scene cut detection using histogram differences.
+    
+    Args:
+        video_path: Path to video file
+        sensitivity: 'low', 'medium', 'high' - affects threshold
+        is_photo_comp: If True, reduces sensitivity for slideshow transitions
+        
+    Returns:
+        List of cut timestamps with confidence: [(timestamp_seconds, confidence_delta), ...]
+    """
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    if fps <= 0 or frame_count <= 0:
+        cap.release()
+        return []
+    
+    # Set thresholds based on sensitivity and photo compilation
+    thresholds = {
+        'low': 0.7,
+        'medium': 0.5, 
+        'high': 0.3
+    }
+    base_threshold = thresholds.get(sensitivity, 0.5)
+    
+    # Relax threshold for photo compilations
+    if is_photo_comp:
+        base_threshold *= 1.5  # Make less sensitive
+    
+    cuts = []
+    prev_hist = None
+    frame_idx = 0
+    
+    # Sample every n-th frame for performance (aim for ~10-15 fps sampling)
+    sample_rate = max(1, int(fps // 12))
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+            
+        # Only process every sample_rate-th frame
+        if frame_idx % sample_rate == 0:
+            # Convert to HSV and compute histogram
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            hist = cv2.calcHist([hsv], [0, 1, 2], None, [50, 60, 60], [0, 180, 0, 256, 0, 256])
+            
+            # Normalize histogram
+            cv2.normalize(hist, hist, 0, 1, cv2.NORM_MINMAX)
+            
+            if prev_hist is not None:
+                # Calculate histogram correlation (higher = more similar)
+                correlation = cv2.compareHist(prev_hist, hist, cv2.HISTCMP_CORREL)
+                delta = 1.0 - correlation  # Convert to difference (higher = more different)
+                
+                # Detect cut if delta exceeds threshold
+                if delta > base_threshold:
+                    timestamp = frame_idx / fps
+                    cuts.append((timestamp, delta))
+            
+            prev_hist = hist
+            
+        frame_idx += 1
+    
+    cap.release()
+    return cuts
+
 def detect_scenes(video_path):
-    video_manager = VideoManager([video_path])
-    scene_manager = SceneManager()
-    scene_manager.add_detector(ContentDetector())
-    video_manager.set_downscale_factor()
-    video_manager.start()
-    scene_manager.detect_scenes(frame_source=video_manager)
-    scene_list = scene_manager.get_scene_list()
-    video_manager.release()
-    return [(int(start.get_seconds()), int(end.get_seconds())) for start, end in scene_list]
+    """Legacy function for backward compatibility."""
+    cuts = detect_scene_cuts(video_path)
+    # Convert cuts to scene segments for compatibility
+    scenes = []
+    last_end = 0
+    for cut_time, _ in cuts:
+        scenes.append((last_end, int(cut_time)))
+        last_end = int(cut_time)
+    
+    # Add final scene if video has content after last cut
+    cap = cv2.VideoCapture(video_path)
+    duration = cap.get(cv2.CAP_PROP_FRAME_COUNT) / cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+    
+    if last_end < duration - 1:
+        scenes.append((last_end, int(duration)))
+    
+    return scenes
 
 def detect_black_frames(video_path, threshold=15, min_duration=1):
     cap = cv2.VideoCapture(video_path)
@@ -178,37 +286,60 @@ def detect_freeze(video_path, freeze_threshold=0.99, min_freeze_duration=20):
     cap.release()
     return list(set(freeze_timestamps))
 
-def spell_check_texts(video_path, ocr, spell, n_samples=5):
+def build_text_timeline(video_path, ocr, n_samples=20):
+    """Build detailed text timeline from OCR sampling.
+    
+    Returns:
+        text_segments: List of [text_string, start_time, end_time, confidence, bbox]
+        all_ocr_samples: Raw OCR results with timestamps
+    """
     cap = cv2.VideoCapture(video_path)
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = cap.get(cv2.CAP_PROP_FPS)
-    mistakes = []
-    all_texts = []
     
-    if ocr is None:
+    all_ocr_samples = []
+    
+    if ocr is None or fps <= 0:
         cap.release()
-        return mistakes, all_texts
+        return [], []
     
+    # Sample more densely for better text timeline construction
     for idx in np.linspace(0, frame_count-1, num=n_samples, dtype=int):
         cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
         ret, frame = cap.read()
         if not ret:
             continue
+            
+        timestamp = idx / fps
         img_path = f"frame_{idx}.jpg"
         cv2.imwrite(img_path, frame)
+        
         try:
             ocr_results = ocr.ocr(img_path)
             if ocr_results:
-                texts = [l[1][0] for line in ocr_results if line for l in line if l]
-                all_texts.extend(texts)
-                if texts and spell:
-                    words = []
-                    for text in texts:
-                        words.extend([w for w in text.split() if w.isalpha()])
-                    misspelled = spell.unknown(words)
-                    for word in misspelled:
-                        timestamp = int(idx // fps) if fps > 0 else 0
-                        mistakes.append((f"{timestamp//60:02d}:{timestamp%60:02d}", f"Potential typo: '{word}'"))
+                for line in ocr_results:
+                    if line:
+                        for detection in line:
+                            if detection and len(detection) >= 2:
+                                bbox = detection[0]  # Bounding box coordinates
+                                text_info = detection[1]  # (text, confidence)
+                                if text_info and len(text_info) >= 2:
+                                    text = text_info[0]
+                                    confidence = text_info[1]
+                                    
+                                    # Normalize text for grouping
+                                    normalized_text = text.lower().strip()
+                                    normalized_text = ''.join(c for c in normalized_text if c.isalnum() or c.isspace())
+                                    normalized_text = ' '.join(normalized_text.split())
+                                    
+                                    if normalized_text:  # Only add non-empty text
+                                        all_ocr_samples.append({
+                                            'text': text,
+                                            'normalized_text': normalized_text,
+                                            'timestamp': timestamp,
+                                            'confidence': confidence,
+                                            'bbox': bbox
+                                        })
         except Exception:
             pass  # Skip OCR errors
         
@@ -216,8 +347,201 @@ def spell_check_texts(video_path, ocr, spell, n_samples=5):
             os.remove(img_path)
         except:
             pass
+    
     cap.release()
+    
+    # Group consecutive samples into segments
+    text_segments = []
+    if not all_ocr_samples:
+        return text_segments, all_ocr_samples
+    
+    # Sort by timestamp
+    all_ocr_samples.sort(key=lambda x: x['timestamp'])
+    
+    # Group by normalized text with temporal proximity
+    current_segment = None
+    gap_threshold = 0.5  # seconds
+    
+    for sample in all_ocr_samples:
+        if current_segment is None:
+            # Start new segment
+            current_segment = {
+                'text': sample['text'],
+                'normalized_text': sample['normalized_text'],
+                'start_time': sample['timestamp'],
+                'end_time': sample['timestamp'],
+                'confidence': sample['confidence'],
+                'bbox': sample['bbox'],
+                'samples': [sample]
+            }
+        elif (sample['normalized_text'] == current_segment['normalized_text'] and 
+              sample['timestamp'] - current_segment['end_time'] <= gap_threshold):
+            # Extend current segment
+            current_segment['end_time'] = sample['timestamp']
+            current_segment['samples'].append(sample)
+            # Update confidence to average
+            confidences = [s['confidence'] for s in current_segment['samples']]
+            current_segment['confidence'] = sum(confidences) / len(confidences)
+        else:
+            # Finalize current segment and start new one
+            text_segments.append([
+                current_segment['text'],
+                current_segment['start_time'],
+                current_segment['end_time'],
+                current_segment['confidence'],
+                current_segment['bbox']
+            ])
+            
+            current_segment = {
+                'text': sample['text'],
+                'normalized_text': sample['normalized_text'],
+                'start_time': sample['timestamp'],
+                'end_time': sample['timestamp'],
+                'confidence': sample['confidence'],
+                'bbox': sample['bbox'],
+                'samples': [sample]
+            }
+    
+    # Don't forget the last segment
+    if current_segment:
+        text_segments.append([
+            current_segment['text'],
+            current_segment['start_time'],
+            current_segment['end_time'],
+            current_segment['confidence'],
+            current_segment['bbox']
+        ])
+    
+    return text_segments, all_ocr_samples
+
+def spell_check_texts(video_path, ocr, spell, n_samples=5):
+    """Legacy function maintaining compatibility while using new timeline builder."""
+    text_segments, all_ocr_samples = build_text_timeline(video_path, ocr, n_samples)
+    
+    mistakes = []
+    all_texts = []
+    
+    # Extract all unique texts for compatibility
+    seen_texts = set()
+    for segment in text_segments:
+        text = segment[0]
+        if text not in seen_texts:
+            all_texts.append(text)
+            seen_texts.add(text)
+    
+    # Spell check using segments
+    if spell and text_segments:
+        for segment in text_segments:
+            text = segment[0]
+            start_time = segment[1]
+            
+            words = [w for w in text.split() if w.isalpha()]
+            misspelled = spell.unknown(words)
+            for word in misspelled:
+                timestamp_str = f"{int(start_time//60):02d}:{int(start_time%60):02d}"
+                mistakes.append((timestamp_str, f"Potential typo: '{word}'"))
+    
     return mistakes, all_texts
+
+def is_photo_compilation(description):
+    """Detect if video is likely a photo compilation/slideshow."""
+    description_lower = description.lower()
+    slideshow_keywords = [
+        'slideshow', 'photo', 'photos', 'compilation', 'images', 
+        'pictures', 'gallery', 'album', 'memories', 'montage'
+    ]
+    return any(keyword in description_lower for keyword in slideshow_keywords)
+
+def detect_text_bleed_across_cuts(text_segments, scene_cuts, bleed_tolerance=0.25):
+    """Detect text that bleeds across scene cuts.
+    
+    Args:
+        text_segments: List of [text, start_time, end_time, confidence, bbox]
+        scene_cuts: List of (cut_timestamp, confidence) 
+        bleed_tolerance: Maximum seconds after cut to consider as bleed
+        
+    Returns:
+        List of mistakes: [(timestamp_str, message, details), ...]
+    """
+    mistakes = []
+    
+    for cut_time, cut_confidence in scene_cuts:
+        # Find text segments that end shortly after this cut
+        for segment in text_segments:
+            text, start_time, end_time, confidence, bbox = segment
+            
+            # Check if text ends within bleed_tolerance after the cut
+            # and started before the cut
+            if (start_time < cut_time < end_time and 
+                end_time - cut_time <= bleed_tolerance and
+                end_time - cut_time > 0):
+                
+                linger_duration = end_time - cut_time
+                timestamp_str = f"{int(cut_time//60):02d}:{int(cut_time%60):02d}"
+                
+                message = f"Text bleeds across cut: '{text[:30]}...'" if len(text) > 30 else f"Text bleeds across cut: '{text}'"
+                details = {
+                    'type': 'text_bleed',
+                    'text': text,
+                    'cut_time': cut_time,
+                    'linger_duration': linger_duration,
+                    'bbox': bbox,
+                    'text_start': start_time,
+                    'text_end': end_time
+                }
+                
+                mistakes.append((timestamp_str, message, details))
+    
+    return mistakes
+
+def detect_text_flashing(text_segments, scene_cuts, flash_min_duration=0.25, transition_buffer=0.2):
+    """Detect text that flashes briefly.
+    
+    Args:
+        text_segments: List of [text, start_time, end_time, confidence, bbox]
+        scene_cuts: List of (cut_timestamp, confidence)
+        flash_min_duration: Minimum duration to not be considered flashing
+        transition_buffer: Seconds around cuts to ignore (transition periods)
+        
+    Returns:
+        List of mistakes: [(timestamp_str, message, details), ...]
+    """
+    mistakes = []
+    
+    # Create set of transition periods around cuts
+    transition_periods = []
+    for cut_time, _ in scene_cuts:
+        transition_periods.append((cut_time - transition_buffer, cut_time + transition_buffer))
+    
+    for segment in text_segments:
+        text, start_time, end_time, confidence, bbox = segment
+        duration = end_time - start_time
+        
+        # Check if duration is too short
+        if duration < flash_min_duration:
+            # Check if it's NOT in a transition period
+            in_transition = False
+            for trans_start, trans_end in transition_periods:
+                if not (end_time < trans_start or start_time > trans_end):
+                    # There's overlap with transition period
+                    in_transition = True
+                    break
+            
+            if not in_transition:
+                timestamp_str = f"{int(start_time//60):02d}:{int(start_time%60):02d}"
+                message = f"Text flashes briefly: '{text[:30]}...'" if len(text) > 30 else f"Text flashes briefly: '{text}'"
+                details = {
+                    'type': 'text_flash',
+                    'text': text,
+                    'duration': duration,
+                    'start_time': start_time,
+                    'end_time': end_time,
+                    'bbox': bbox
+                }
+                
+                mistakes.append((timestamp_str, message, details))
+    
+    return mistakes
 
 def compare_to_notes(all_texts, description):
     # Very basic notes comparison: check if all main keywords from notes appear in video text
@@ -233,17 +557,27 @@ def download_video_from_url(url):
     try:
         # Check if it's a YouTube URL
         if "youtube.com" in url or "youtu.be" in url:
-            # Use pytube for YouTube videos
-            yt = YouTube(url)
-            # Get the highest quality mp4 stream
-            stream = yt.streams.filter(file_extension='mp4').get_highest_resolution()
-            if not stream:
-                # Fallback to any available stream
-                stream = yt.streams.first()
+            # Use yt-dlp for YouTube videos
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.%(ext)s') as temp_file:
+                temp_path = temp_file.name
+                
+            ydl_opts = {
+                'outtmpl': temp_path,
+                'format': 'best[ext=mp4]/best',
+                'noplaylist': True,
+            }
             
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
-                stream.download(output_path=os.path.dirname(temp_file.name), filename=os.path.basename(temp_file.name))
-                return temp_file.name
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+                
+            # Find the actual downloaded file
+            base_path = temp_path.replace('.%(ext)s', '')
+            for ext in ['.mp4', '.mkv', '.webm']:
+                if os.path.exists(base_path + ext):
+                    return base_path + ext
+            
+            # If no specific extension found, return original path
+            return temp_path.replace('.%(ext)s', '.mp4')
         else:
             # Direct video link - use requests
             response = requests.get(url, stream=True)
@@ -378,10 +712,10 @@ def get_video_analysis_results_from_url(video_url, description):
     
     return results
 
-def compare_videos_with_url(video1_path, video2_url, description):
+def compare_videos_with_url(video1_path, video2_url, description, cut_sensitivity='medium', bleed_tolerance=0.25, flash_min_duration=0.25):
     """Compare uploaded video (file path) with reference video (URL)."""
     st.write("Analyzing uploaded video...")
-    uploaded_results = get_video_analysis_results(video1_path, description)
+    uploaded_results = get_video_analysis_results(video1_path, description, cut_sensitivity, bleed_tolerance, flash_min_duration)
     
     st.write("Analyzing reference video from URL...")
     reference_results = get_video_analysis_results_from_url(video2_url, description)
@@ -445,21 +779,68 @@ def compare_videos_with_url(video1_path, video2_url, description):
     
     return comparison
 
-def get_video_analysis_results(video_path, description):
+def get_video_analysis_results(video_path, description, cut_sensitivity='medium', bleed_tolerance=0.25, flash_min_duration=0.25):
     """Get detailed analysis results for a video (used for comparison)."""
     results = {}
+    
+    # Detect if this is a photo compilation
+    is_photo_comp = is_photo_compilation(description)
+    results['is_photo_compilation'] = is_photo_comp
     
     # Aspect ratio
     results['aspect_ratio'] = analyze_aspect_ratio(video_path)
     
-    # Scene detection
+    # Scene cut detection (new lightweight approach)
     try:
+        scene_cuts = detect_scene_cuts(video_path, cut_sensitivity, is_photo_comp)
+        results['scene_cuts'] = scene_cuts
+        
+        # Legacy scene detection for backward compatibility
         scenes = detect_scenes(video_path)
         results['scenes'] = scenes
         results['short_scenes'] = [s for s in scenes if s[1] - s[0] < 1]
-    except Exception:
+    except Exception as e:
+        results['scene_cuts'] = []
         results['scenes'] = []
         results['short_scenes'] = []
+    
+    # Build text timeline
+    try:
+        text_segments, all_ocr_samples = build_text_timeline(video_path, ocr)
+        results['text_timeline'] = text_segments
+        results['text_ocr_samples'] = all_ocr_samples
+    except Exception as e:
+        results['text_timeline'] = []
+        results['text_ocr_samples'] = []
+        text_segments = []
+    
+    # Text bleed detection
+    try:
+        if results['scene_cuts'] and results['text_timeline']:
+            text_bleed_mistakes = detect_text_bleed_across_cuts(
+                results['text_timeline'], 
+                results['scene_cuts'], 
+                bleed_tolerance
+            )
+            results['text_bleed_mistakes'] = text_bleed_mistakes
+        else:
+            results['text_bleed_mistakes'] = []
+    except Exception as e:
+        results['text_bleed_mistakes'] = []
+    
+    # Text flashing detection  
+    try:
+        if results['text_timeline']:
+            text_flash_mistakes = detect_text_flashing(
+                results['text_timeline'],
+                results['scene_cuts'],
+                flash_min_duration
+            )
+            results['text_flash_mistakes'] = text_flash_mistakes
+        else:
+            results['text_flash_mistakes'] = []
+    except Exception as e:
+        results['text_flash_mistakes'] = []
     
     # Black frames
     results['black_frames'] = detect_black_frames(video_path)
@@ -470,7 +851,7 @@ def get_video_analysis_results(video_path, description):
     # Freeze detection
     results['freeze_frames'] = detect_freeze(video_path)
     
-    # OCR & spell check
+    # OCR & spell check (legacy)
     text_mistakes, all_texts = spell_check_texts(video_path, ocr, spell)
     results['text_mistakes'] = text_mistakes
     results['all_texts'] = all_texts
@@ -543,39 +924,80 @@ def compare_videos(video1_path, video2_path, description):
     
     return comparison
 
-def analyze_video(video_path, description):
+def analyze_video(video_path, description, cut_sensitivity='medium', bleed_tolerance=0.25, flash_min_duration=0.25):
     mistakes = []
+    
+    # Detect if this is a photo compilation
+    is_photo_comp = is_photo_compilation(description)
+    
     # Aspect ratio
     aspect_mistake = analyze_aspect_ratio(video_path)
     if aspect_mistake:
         mistakes.append(("00:00", aspect_mistake))
-    # Scene/cut detection (short scenes)
+    
+    # Scene cut detection with new approach
+    scene_cuts = []
     try:
+        scene_cuts = detect_scene_cuts(video_path, cut_sensitivity, is_photo_comp)
+        
+        # Legacy scene detection for short scenes
         scenes = detect_scenes(video_path)
         for start, end in scenes:
             if end - start < 1:
                 mistakes.append((f"{start//60:02d}:{start%60:02d}", "Detected very short clip segment (<1s)"))
     except Exception:
         pass
+    
+    # Build text timeline for new detections
+    text_segments = []
+    try:
+        text_segments, _ = build_text_timeline(video_path, ocr)
+    except Exception:
+        pass
+    
+    # Text bleed detection
+    try:
+        if scene_cuts and text_segments:
+            text_bleed_mistakes = detect_text_bleed_across_cuts(text_segments, scene_cuts, bleed_tolerance)
+            for ts, msg, details in text_bleed_mistakes:
+                mistakes.append((ts, msg))
+    except Exception:
+        pass
+    
+    # Text flashing detection
+    try:
+        if text_segments:
+            text_flash_mistakes = detect_text_flashing(text_segments, scene_cuts, flash_min_duration)
+            for ts, msg, details in text_flash_mistakes:
+                mistakes.append((ts, msg))
+    except Exception:
+        pass
+    
     # Black frame detection
     black_ts = detect_black_frames(video_path)
     for ts in black_ts:
         mistakes.append((ts, "Black frame detected"))
+    
     # Flicker detection
     flicker_ts = detect_flicker(video_path)
     for ts in flicker_ts:
         mistakes.append((ts, "Flicker/flash detected"))
-    # Freeze detection
-    freeze_ts = detect_freeze(video_path)
-    for ts in freeze_ts:
-        mistakes.append((ts, "Frozen frame or video freeze detected"))
+    
+    # Freeze detection (suppress for photo compilations)
+    if not is_photo_comp:
+        freeze_ts = detect_freeze(video_path)
+        for ts in freeze_ts:
+            mistakes.append((ts, "Frozen frame or video freeze detected"))
+    
     # OCR & spell check
     text_mistakes, all_texts = spell_check_texts(video_path, ocr, spell)
     for ts, msg in text_mistakes:
         mistakes.append((ts, msg))
+    
     # Compare to notes
     notes_mismatch = compare_to_notes(all_texts, description)
     mistakes.append(("Notes Check", notes_mismatch))
+    
     return mistakes if mistakes else [("00:00", "No obvious mistakes detected.")]
 
 # --- MAIN LOGIC ---
@@ -589,7 +1011,34 @@ if submit_button and uploaded_file is not None:
     
     # Analyze uploaded video
     with st.spinner("Analyzing uploaded video with AI... (may take up to 2 minutes)"):
-        mistakes = analyze_video(temp_video_path, description)
+        mistakes = analyze_video(temp_video_path, description, cut_sensitivity, bleed_tolerance, flash_min_duration)
+    
+    # Get detailed analysis results for summary
+    analysis_results = get_video_analysis_results(temp_video_path, description, cut_sensitivity, bleed_tolerance, flash_min_duration)
+    
+    # Analysis Summary
+    st.subheader("📊 Analysis Summary")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Scene Cuts", len(analysis_results.get('scene_cuts', [])))
+        st.metric("Black Frames", len(analysis_results.get('black_frames', [])))
+    
+    with col2:
+        st.metric("Text Bleed Issues", len(analysis_results.get('text_bleed_mistakes', [])))
+        st.metric("Text Flash Issues", len(analysis_results.get('text_flash_mistakes', [])))
+    
+    with col3:
+        st.metric("Flicker/Flash", len(analysis_results.get('flicker_frames', [])))
+        st.metric("Freeze Issues", len(analysis_results.get('freeze_frames', [])))
+    
+    with col4:
+        st.metric("Text Elements", len(analysis_results.get('all_texts', [])))
+        st.metric("Spelling Errors", len(analysis_results.get('text_mistakes', [])))
+    
+    # Show if photo compilation detected
+    if analysis_results.get('is_photo_compilation'):
+        st.info("📸 Photo compilation detected - adjusted analysis sensitivity")
     
     st.subheader("Detected Mistakes & Content Mismatches (with Timestamps)")
     for ts, mistake in mistakes:
@@ -602,7 +1051,7 @@ if submit_button and uploaded_file is not None:
         
         try:
             with st.spinner("Analyzing reference video from URL... (may take up to 3 minutes)"):
-                comparison = compare_videos_with_url(temp_video_path, reference_url.strip(), description)
+                comparison = compare_videos_with_url(temp_video_path, reference_url.strip(), description, cut_sensitivity, bleed_tolerance, flash_min_duration)
             
             # Display comparison results
             col1, col2 = st.columns(2)
@@ -628,11 +1077,33 @@ if submit_button and uploaded_file is not None:
                 st.markdown("#### Uploaded Video Analysis:")
                 uploaded_results = comparison['uploaded']
                 st.write(f"- **Scenes detected:** {len(uploaded_results['scenes'])}")
+                st.write(f"- **Scene cuts detected:** {len(uploaded_results.get('scene_cuts', []))}")
                 st.write(f"- **Black frames:** {len(uploaded_results['black_frames'])}")
                 st.write(f"- **Flicker instances:** {len(uploaded_results['flicker_frames'])}")
                 st.write(f"- **Freeze instances:** {len(uploaded_results['freeze_frames'])}")
                 st.write(f"- **Text elements:** {len(uploaded_results['all_texts'])}")
                 st.write(f"- **Text errors:** {len(uploaded_results['text_mistakes'])}")
+                st.write(f"- **Text bleed issues:** {len(uploaded_results.get('text_bleed_mistakes', []))}")
+                st.write(f"- **Text flash issues:** {len(uploaded_results.get('text_flash_mistakes', []))}")
+                
+                # Show text timeline summary if available
+                if uploaded_results.get('text_timeline'):
+                    st.write(f"- **Text timeline segments:** {len(uploaded_results['text_timeline'])}")
+                    longest_texts = sorted(uploaded_results['text_timeline'], 
+                                         key=lambda x: x[2] - x[1], reverse=True)[:3]
+                    if longest_texts:
+                        st.write("  - **Longest text segments:**")
+                        for text, start, end, conf, bbox in longest_texts:
+                            duration = end - start
+                            st.write(f"    - '{text[:30]}...' ({duration:.1f}s)" if len(text) > 30 else f"    - '{text}' ({duration:.1f}s)")
+                
+                # Show scene cuts if available
+                if uploaded_results.get('scene_cuts'):
+                    st.write("  - **Scene cuts:**")
+                    for cut_time, confidence in uploaded_results['scene_cuts'][:5]:  # Show first 5
+                        st.write(f"    - {cut_time:.1f}s (confidence: {confidence:.2f})")
+                    if len(uploaded_results['scene_cuts']) > 5:
+                        st.write(f"    - ... and {len(uploaded_results['scene_cuts']) - 5} more")
                 
                 st.markdown("#### Reference Video Analysis:")
                 reference_results = comparison['reference']
