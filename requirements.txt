@@ -7,3 +7,4 @@ pyspellchecker
 pytube
 requests
 paddlepaddle
+yt-dlp
