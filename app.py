@@ -1,5 +1,17 @@
 import streamlit as st
 
+# Add this CSS at the very top to make the background purple
+st.markdown(
+    """
+    <style>
+        .stApp {
+            background-color: #800080;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 # Simulated video analysis function
 def analyze_video(video_path: str, description: str):
     mistakes = []
@@ -20,8 +32,8 @@ def analyze_video(video_path: str, description: str):
 st.title("TikTok Video QA Web App")
 st.markdown("This app allows you to upload a TikTok video from your device and generates a bullet-pointed list of potential editing mistakes.")
 
-# File uploader
-uploaded_file = st.file_uploader("Upload your TikTok video", type=["mp4"])
+# File uploader (now allows mp4 and mov)
+uploaded_file = st.file_uploader("Upload your TikTok video", type=["mp4", "mov"])
 
 # Description input
 description = st.text_area("Describe what the video should be:", "A short dancing clip with text captions.")
