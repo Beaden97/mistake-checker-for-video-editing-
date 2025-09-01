@@ -1,0 +1,58 @@
+/* Targeted contrast fixes only — no global theme changes */
+
+/* Links: make more readable on light backgrounds */
+.stMarkdown a, a {
+  color: #0969DA !important;          /* Accessible blue */
+  text-decoration-thickness: 2px;
+}
+a:visited {
+  color: #8250DF !important;          /* Accessible visited purple */
+}
+
+/* Sidebar text and labels */
+section[data-testid="stSidebar"] {
+  color: #1F2328 !important;          /* Nearly-black for readability */
+}
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] li,
+section[data-testid="stSidebar"] span {
+  color: #1F2328 !important;
+}
+
+/* Widget/input labels (top-of-control text can appear washed out) */
+label,
+[data-testid="stWidgetLabel"] {
+  color: #1F2328 !important;
+}
+
+/* Hint/help/caption/small text: keep readable but clearly secondary */
+small,
+.help,
+.hint,
+.description,
+[data-testid="stCaptionContainer"] {
+  color: #57606A !important;          /* Darker muted gray */
+}
+
+/* Input placeholders: slightly darker so they don't blend into bg */
+input::placeholder,
+textarea::placeholder {
+  color: #57606A !important;
+  opacity: 1 !important;
+}
+
+/* Expanders: header text can look faint */
+details[data-testid="stExpander"] summary {
+  color: #1F2328 !important;
+}
+
+/* Tabs: tab labels can look low-contrast on some themes */
+button[role="tab"] {
+  color: #1F2328 !important;
+}
+
+/* Metric delta text: ensure visibility */
+div[data-testid="stMetricDelta"] {
+  color: #1F2328 !important;
+}
