@@ -16,7 +16,12 @@ def _send_feedback_email(message_text: str, contact: str = "") -> tuple[bool, Op
     Returns (ok, error_message). On success, (True, None). On failure, (False, reason).
     """
     try:
-        smtp_cfg = st.secrets.get("smtp", None)
+        try:
+            smtp_cfg = st.secrets.get("smtp", None)
+        except Exception:
+            # No secrets file exists
+            smtp_cfg = None
+            
         if not smtp_cfg:
             return False, "SMTP configuration not found in Streamlit secrets."
 
@@ -121,14 +126,17 @@ def render_feedback_widget():
                         error_msg = f"Failed to send feedback: {err}"
                         
                         # Add helpful hints for common issues
-                        if "authentication" in err.lower() or "auth" in err.lower():
+                        err_lower = err.lower()
+                        if "authentication" in err_lower or "auth" in err_lower:
                             error_msg += "\n\n💡 **Hint**: Check your SMTP username and password in the configuration."
-                        elif "tls" in err.lower() or "ssl" in err.lower():
+                        elif "tls" in err_lower or "ssl" in err_lower:
                             error_msg += "\n\n💡 **Hint**: Try toggling the 'use_tls' setting or check the port number (587 for TLS, 465 for SSL, 25 for plain)."
-                        elif "connection" in err.lower() or "network" in err.lower():
+                        elif "connection" in err_lower or "network" in err_lower:
                             error_msg += "\n\n💡 **Hint**: Check your SMTP server hostname and port. Ensure network connectivity."
-                        elif "refused" in err.lower():
+                        elif "refused" in err_lower:
                             error_msg += "\n\n💡 **Hint**: The server refused the sender or recipient address. Check your 'from' and 'to' email addresses."
+                        elif ("name" in err_lower and "resolve" in err_lower) or "hostname" in err_lower or "address associated" in err_lower:
+                            error_msg += "\n\n💡 **Hint**: Check the SMTP server hostname for typos. Common hostnames: smtp.gmail.com, smtp-mail.outlook.com, smtp.sendgrid.net"
                         
                         st.error(error_msg)
                         st.session_state["feedback_last_status"] = "error"

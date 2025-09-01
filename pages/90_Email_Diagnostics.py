@@ -18,7 +18,12 @@ def test_smtp_configuration(debug: bool = False) -> tuple[bool, str]:
     or detailed error information with hints.
     """
     try:
-        smtp_cfg = st.secrets.get("smtp", None)
+        try:
+            smtp_cfg = st.secrets.get("smtp", None)
+        except Exception:
+            # No secrets file exists
+            smtp_cfg = None
+            
         if not smtp_cfg:
             return False, "❌ **SMTP configuration not found in Streamlit secrets.**\n\nPlease add an [smtp] section to your secrets configuration."
 
@@ -100,7 +105,7 @@ def test_smtp_configuration(debug: bool = False) -> tuple[bool, str]:
             error_msg += "\n\n💡 **Common Solutions:**\n- Check your SMTP server hostname\n- Verify the port number\n- Ensure network connectivity\n- Check firewall settings"
         elif "refused" in error_str:
             error_msg += "\n\n💡 **Common Solutions:**\n- Verify the 'from' email address is authorized to send\n- Check that the 'to' email address is valid\n- Some providers require domain verification"
-        elif "name" in error_str and "resolve" in error_str:
+        elif ("name" in error_str and "resolve" in error_str) or "hostname" in error_str or "address associated" in error_str:
             error_msg += "\n\n💡 **Common Solutions:**\n- Check the SMTP server hostname for typos\n- Verify DNS resolution\n- Common hostnames: smtp.gmail.com, smtp-mail.outlook.com, smtp.sendgrid.net"
         
         return False, error_msg
@@ -120,7 +125,12 @@ def main():
     # Show current configuration status (without revealing secrets)
     st.subheader("📋 Current Configuration")
     
-    smtp_cfg = st.secrets.get("smtp", None)
+    try:
+        smtp_cfg = st.secrets.get("smtp", None)
+    except Exception:
+        # No secrets file exists
+        smtp_cfg = None
+    
     if not smtp_cfg:
         st.error("❌ No SMTP configuration found in Streamlit secrets.")
         st.markdown("""
