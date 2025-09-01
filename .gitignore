@@ -10,7 +10,7 @@ env/
 .DS_Store
 Thumbs.db
 *.log
-.streamlit/
+.streamlit/secrets.toml
 tmp/
 temp/
 *.tmp

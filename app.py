@@ -13,10 +13,14 @@ from urllib.parse import urlparse
 import re
 
 from app_theme import apply_base_theme, apply_runtime_theme_controls
+from components.feedback import render_feedback_widget
 
 # Apply theme before any Streamlit output
 apply_base_theme(page_title="The Video Editing Mistake Checker", page_icon=None)
 _appearance = apply_runtime_theme_controls()
+
+# Add feedback widget
+render_feedback_widget()
 
 # --- INSTRUCTIONS SECTION ---
 _default_hero = "The Video Editing Mistake Checker"
