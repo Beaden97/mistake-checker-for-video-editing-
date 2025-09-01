@@ -11,6 +11,8 @@ import requests
 import yt_dlp
 from urllib.parse import urlparse
 import re
+import hashlib
+import language_tool_python
 
 # --- INSTRUCTIONS SECTION ---
 st.title("AI TikTok Video QA (Deep Learning, Web-Based, No Install)")
@@ -71,6 +73,22 @@ flash_min_duration = st.sidebar.slider(
     help="Minimum duration for text to not be considered flashing"
 )
 
+st.sidebar.subheader("Suppression Controls")
+always_on_text = st.sidebar.text_input(
+    "Always-on text patterns (comma-separated)",
+    value="",
+    help="Text patterns that should not be flagged as bleeding (e.g., 'Subscribe,Like,Follow')"
+)
+
+max_bleed_ignore_duration = st.sidebar.number_input(
+    "Max Bleed Ignore Duration (seconds)",
+    min_value=1.0,
+    max_value=30.0,
+    value=6.0,
+    step=0.5,
+    help="If text bleeds longer than this duration, ignore it (default 6s)"
+)
+
 # --- SUBMIT BUTTON ---
 st.markdown("---")
 # Check if both required fields are filled
@@ -100,8 +118,87 @@ def get_spell():
         st.warning(f"Spell checker initialization failed: {str(e)}. Spell checking will be disabled.")
         return None
 
+@st.cache_resource 
+def get_grammar_tool():
+    """Initialize LanguageTool for grammar checking with fallback."""
+    try:
+        # Try to use online LanguageTool service
+        tool = language_tool_python.LanguageTool('en-US')
+        # Test with a simple check
+        tool.check("This is a test.")
+        return tool, "online"
+    except Exception as e:
+        try:
+            # Fallback to offline local tool
+            tool = language_tool_python.LanguageToolPublicAPI('en-US')
+            return tool, "offline"
+        except Exception as e2:
+            st.warning(f"Grammar checking initialization failed (online: {str(e)}, offline: {str(e2)}). Grammar checking will be disabled.")
+            return None, "disabled"
+
+def check_grammar_mistakes(text_segments, grammar_tool, tool_type):
+    """Check text segments for grammar mistakes using LanguageTool."""
+    grammar_mistakes = []
+    
+    if not grammar_tool or not text_segments:
+        return grammar_mistakes
+    
+    for segment in text_segments:
+        text, start_time, end_time, confidence, bbox = segment
+        
+        # Skip very short text that's likely not full sentences
+        if len(text.strip()) < 10:
+            continue
+            
+        try:
+            matches = grammar_tool.check(text)
+            for match in matches:
+                if match.ruleId and 'SPELL' not in match.ruleId.upper():  # Skip spelling errors (already handled)
+                    timestamp_str = f"{int(start_time//60):02d}:{int(start_time%60):02d}"
+                    error_text = text[match.offset:match.offset + match.errorLength]
+                    suggestion = match.replacements[0] if match.replacements else "no suggestion"
+                    
+                    message = f"Grammar: '{error_text}' → '{suggestion}' in '{text[:30]}...'" if len(text) > 30 else f"Grammar: '{error_text}' → '{suggestion}' in '{text}'"
+                    
+                    details = {
+                        'type': 'grammar_error',
+                        'text': text,
+                        'error_text': error_text,
+                        'suggestion': suggestion,
+                        'rule_id': match.ruleId,
+                        'message': match.message,
+                        'start_time': start_time,
+                        'end_time': end_time,
+                        'bbox': bbox
+                    }
+                    
+                    grammar_mistakes.append((timestamp_str, message, details))
+        except Exception:
+            # Skip individual text checking errors
+            continue
+    
+    return grammar_mistakes
+
 ocr = get_ocr()
 spell = get_spell()
+grammar_tool, grammar_tool_type = get_grammar_tool()
+
+# Initialize session state for checklist
+if 'checklist_items' not in st.session_state:
+    st.session_state.checklist_items = {}
+if 'marked_as_intended' not in st.session_state:
+    st.session_state.marked_as_intended = {}
+
+def generate_stable_id(mistake_details):
+    """Generate stable ID for checklist items based on mistake content."""
+    if isinstance(mistake_details, dict):
+        # For detailed mistakes (bleed, flash, grammar)
+        content = f"{mistake_details.get('type', '')}_{mistake_details.get('text', '')}_{mistake_details.get('start_time', 0)}"
+    else:
+        # For simple string mistakes
+        content = str(mistake_details)
+    
+    return hashlib.md5(content.encode()).hexdigest()[:12]
 
 def analyze_aspect_ratio(video_path):
     cap = cv2.VideoCapture(video_path)
@@ -452,18 +549,26 @@ def is_photo_compilation(description):
     ]
     return any(keyword in description_lower for keyword in slideshow_keywords)
 
-def detect_text_bleed_across_cuts(text_segments, scene_cuts, bleed_tolerance=0.25):
+def detect_text_bleed_across_cuts(text_segments, scene_cuts, bleed_tolerance=0.25, always_on_patterns=None, max_ignore_duration=6.0):
     """Detect text that bleeds across scene cuts.
     
     Args:
         text_segments: List of [text, start_time, end_time, confidence, bbox]
         scene_cuts: List of (cut_timestamp, confidence) 
         bleed_tolerance: Maximum seconds after cut to consider as bleed
+        always_on_patterns: List of text patterns to ignore (always-on text)
+        max_ignore_duration: If bleed duration exceeds this, ignore it
         
     Returns:
         List of mistakes: [(timestamp_str, message, details), ...]
     """
     mistakes = []
+    
+    # Parse always-on patterns
+    if always_on_patterns:
+        patterns = [p.strip().lower() for p in always_on_patterns.split(',') if p.strip()]
+    else:
+        patterns = []
     
     for cut_time, cut_confidence in scene_cuts:
         # Find text segments that end shortly after this cut
@@ -477,6 +582,17 @@ def detect_text_bleed_across_cuts(text_segments, scene_cuts, bleed_tolerance=0.2
                 end_time - cut_time > 0):
                 
                 linger_duration = end_time - cut_time
+                
+                # Apply suppression rules
+                # 1. Check if linger duration exceeds ignore threshold
+                if linger_duration > max_ignore_duration:
+                    continue
+                
+                # 2. Check if text matches always-on patterns
+                text_normalized = text.lower().strip()
+                if any(pattern in text_normalized for pattern in patterns if pattern):
+                    continue
+                
                 timestamp_str = f"{int(cut_time//60):02d}:{int(cut_time%60):02d}"
                 
                 message = f"Text bleeds across cut: '{text[:30]}...'" if len(text) > 30 else f"Text bleeds across cut: '{text}'"
@@ -712,10 +828,10 @@ def get_video_analysis_results_from_url(video_url, description):
     
     return results
 
-def compare_videos_with_url(video1_path, video2_url, description, cut_sensitivity='medium', bleed_tolerance=0.25, flash_min_duration=0.25):
+def compare_videos_with_url(video1_path, video2_url, description, cut_sensitivity='medium', bleed_tolerance=0.25, flash_min_duration=0.25, always_on_text="", max_bleed_ignore_duration=6.0):
     """Compare uploaded video (file path) with reference video (URL)."""
     st.write("Analyzing uploaded video...")
-    uploaded_results = get_video_analysis_results(video1_path, description, cut_sensitivity, bleed_tolerance, flash_min_duration)
+    uploaded_results = get_video_analysis_results(video1_path, description, cut_sensitivity, bleed_tolerance, flash_min_duration, always_on_text, max_bleed_ignore_duration)
     
     st.write("Analyzing reference video from URL...")
     reference_results = get_video_analysis_results_from_url(video2_url, description)
@@ -779,7 +895,7 @@ def compare_videos_with_url(video1_path, video2_url, description, cut_sensitivit
     
     return comparison
 
-def get_video_analysis_results(video_path, description, cut_sensitivity='medium', bleed_tolerance=0.25, flash_min_duration=0.25):
+def get_video_analysis_results(video_path, description, cut_sensitivity='medium', bleed_tolerance=0.25, flash_min_duration=0.25, always_on_text="", max_bleed_ignore_duration=6.0):
     """Get detailed analysis results for a video (used for comparison)."""
     results = {}
     
@@ -820,7 +936,9 @@ def get_video_analysis_results(video_path, description, cut_sensitivity='medium'
             text_bleed_mistakes = detect_text_bleed_across_cuts(
                 results['text_timeline'], 
                 results['scene_cuts'], 
-                bleed_tolerance
+                bleed_tolerance,
+                always_on_text,
+                max_bleed_ignore_duration
             )
             results['text_bleed_mistakes'] = text_bleed_mistakes
         else:
@@ -841,6 +959,16 @@ def get_video_analysis_results(video_path, description, cut_sensitivity='medium'
             results['text_flash_mistakes'] = []
     except Exception as e:
         results['text_flash_mistakes'] = []
+    
+    # Grammar checking
+    try:
+        if grammar_tool and results['text_timeline']:
+            grammar_mistakes = check_grammar_mistakes(results['text_timeline'], grammar_tool, grammar_tool_type)
+            results['grammar_mistakes'] = grammar_mistakes
+        else:
+            results['grammar_mistakes'] = []
+    except Exception as e:
+        results['grammar_mistakes'] = []
     
     # Black frames
     results['black_frames'] = detect_black_frames(video_path)
@@ -924,8 +1052,9 @@ def compare_videos(video1_path, video2_path, description):
     
     return comparison
 
-def analyze_video(video_path, description, cut_sensitivity='medium', bleed_tolerance=0.25, flash_min_duration=0.25):
+def analyze_video(video_path, description, cut_sensitivity='medium', bleed_tolerance=0.25, flash_min_duration=0.25, always_on_text="", max_bleed_ignore_duration=6.0):
     mistakes = []
+    detailed_mistakes = []  # For checklist integration
     
     # Detect if this is a photo compilation
     is_photo_comp = is_photo_compilation(description)
@@ -955,12 +1084,13 @@ def analyze_video(video_path, description, cut_sensitivity='medium', bleed_toler
     except Exception:
         pass
     
-    # Text bleed detection
+    # Text bleed detection with suppression
     try:
         if scene_cuts and text_segments:
-            text_bleed_mistakes = detect_text_bleed_across_cuts(text_segments, scene_cuts, bleed_tolerance)
+            text_bleed_mistakes = detect_text_bleed_across_cuts(text_segments, scene_cuts, bleed_tolerance, always_on_text, max_bleed_ignore_duration)
             for ts, msg, details in text_bleed_mistakes:
                 mistakes.append((ts, msg))
+                detailed_mistakes.append((ts, msg, details))
     except Exception:
         pass
     
@@ -970,8 +1100,19 @@ def analyze_video(video_path, description, cut_sensitivity='medium', bleed_toler
             text_flash_mistakes = detect_text_flashing(text_segments, scene_cuts, flash_min_duration)
             for ts, msg, details in text_flash_mistakes:
                 mistakes.append((ts, msg))
+                detailed_mistakes.append((ts, msg, details))
     except Exception:
         pass
+    
+    # Grammar checking for text segments
+    if grammar_tool and text_segments:
+        try:
+            grammar_mistakes = check_grammar_mistakes(text_segments, grammar_tool, grammar_tool_type)
+            for ts, msg, details in grammar_mistakes:
+                mistakes.append((ts, msg))
+                detailed_mistakes.append((ts, msg, details))
+        except Exception:
+            pass
     
     # Black frame detection
     black_ts = detect_black_frames(video_path)
@@ -998,7 +1139,73 @@ def analyze_video(video_path, description, cut_sensitivity='medium', bleed_toler
     notes_mismatch = compare_to_notes(all_texts, description)
     mistakes.append(("Notes Check", notes_mismatch))
     
+    # Store detailed mistakes in session state for checklist
+    st.session_state.checklist_items = {}
+    for ts, msg, details in detailed_mistakes:
+        item_id = generate_stable_id(details)
+        st.session_state.checklist_items[item_id] = {
+            'timestamp': ts,
+            'message': msg,
+            'details': details,
+            'completed': False
+        }
+    
     return mistakes if mistakes else [("00:00", "No obvious mistakes detected.")]
+
+def generate_checklist_markdown():
+    """Generate markdown export of the checklist."""
+    markdown = "# Video Analysis Checklist\n\n"
+    markdown += f"Generated on: {st.session_state.get('analysis_date', 'Unknown')}\n\n"
+    
+    if not st.session_state.checklist_items:
+        markdown += "No items found in checklist.\n"
+        return markdown
+    
+    # Group items by status
+    completed_items = []
+    pending_items = []
+    intended_items = []
+    
+    for item_id, item in st.session_state.checklist_items.items():
+        if st.session_state.marked_as_intended.get(item_id, False):
+            intended_items.append(item)
+        elif item['completed']:
+            completed_items.append(item)
+        else:
+            pending_items.append(item)
+    
+    # Write sections
+    if pending_items:
+        markdown += "## ⏳ Pending Items\n\n"
+        for item in pending_items:
+            markdown += f"- [ ] **[{item['timestamp']}]** {item['message']}\n"
+        markdown += "\n"
+    
+    if completed_items:
+        markdown += "## ✅ Completed Items\n\n"
+        for item in completed_items:
+            markdown += f"- [x] **[{item['timestamp']}]** {item['message']}\n"
+        markdown += "\n"
+    
+    if intended_items:
+        markdown += "## 🎯 Marked as Intended\n\n"
+        for item in intended_items:
+            markdown += f"- [i] **[{item['timestamp']}]** {item['message']} *(deliberate choice)*\n"
+        markdown += "\n"
+    
+    # Summary
+    total = len(st.session_state.checklist_items)
+    completed = len(completed_items)
+    intended = len(intended_items)
+    pending = len(pending_items)
+    
+    markdown += "## Summary\n\n"
+    markdown += f"- Total items: {total}\n"
+    markdown += f"- Completed: {completed}\n"
+    markdown += f"- Marked as intended: {intended}\n"
+    markdown += f"- Pending: {pending}\n"
+    
+    return markdown
 
 # --- MAIN LOGIC ---
 if submit_button and uploaded_file is not None:
@@ -1009,12 +1216,16 @@ if submit_button and uploaded_file is not None:
     st.video(temp_video_path)
     st.write(f"**Your Notes:** {description}")
     
+    # Set analysis date in session state
+    import datetime
+    st.session_state.analysis_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
     # Analyze uploaded video
     with st.spinner("Analyzing uploaded video with AI... (may take up to 2 minutes)"):
-        mistakes = analyze_video(temp_video_path, description, cut_sensitivity, bleed_tolerance, flash_min_duration)
+        mistakes = analyze_video(temp_video_path, description, cut_sensitivity, bleed_tolerance, flash_min_duration, always_on_text, max_bleed_ignore_duration)
     
     # Get detailed analysis results for summary
-    analysis_results = get_video_analysis_results(temp_video_path, description, cut_sensitivity, bleed_tolerance, flash_min_duration)
+    analysis_results = get_video_analysis_results(temp_video_path, description, cut_sensitivity, bleed_tolerance, flash_min_duration, always_on_text, max_bleed_ignore_duration)
     
     # Analysis Summary
     st.subheader("📊 Analysis Summary")
@@ -1034,11 +1245,64 @@ if submit_button and uploaded_file is not None:
     
     with col4:
         st.metric("Text Elements", len(analysis_results.get('all_texts', [])))
-        st.metric("Spelling Errors", len(analysis_results.get('text_mistakes', [])))
+        st.metric("Grammar Errors", len(analysis_results.get('grammar_mistakes', [])))
     
     # Show if photo compilation detected
     if analysis_results.get('is_photo_compilation'):
         st.info("📸 Photo compilation detected - adjusted analysis sensitivity")
+    
+    # Grammar tool status
+    if grammar_tool_type == "online":
+        st.success("✅ Online grammar checking enabled")
+    elif grammar_tool_type == "offline":
+        st.info("⚡ Offline grammar checking enabled")
+    else:
+        st.warning("⚠️ Grammar checking disabled")
+    
+    # Fix Checklist
+    if st.session_state.checklist_items:
+        st.markdown("---")
+        st.subheader("🔧 Fix Checklist")
+        st.write("Click the checkboxes to mark items as fixed or use 'Mark as intended' for deliberate choices:")
+        
+        checklist_updated = False
+        items_to_remove = []
+        
+        for item_id, item in st.session_state.checklist_items.items():
+            # Skip items marked as intended (but show their status)
+            if st.session_state.marked_as_intended.get(item_id, False):
+                st.success(f"✅ **[{item['timestamp']}]** {item['message']} *(marked as intended)*")
+                continue
+                
+            col1, col2, col3 = st.columns([0.1, 0.7, 0.2])
+            
+            with col1:
+                completed = st.checkbox("", value=item['completed'], key=f"check_{item_id}")
+                if completed != item['completed']:
+                    st.session_state.checklist_items[item_id]['completed'] = completed
+                    checklist_updated = True
+            
+            with col2:
+                if completed:
+                    st.success(f"**[{item['timestamp']}]** ~~{item['message']}~~")
+                else:
+                    st.write(f"**[{item['timestamp']}]** {item['message']}")
+            
+            with col3:
+                if st.button("Mark as intended", key=f"intent_{item_id}", help="Mark this as a deliberate choice"):
+                    st.session_state.marked_as_intended[item_id] = True
+                    checklist_updated = True
+                    st.rerun()
+        
+        # Export functionality
+        if st.button("📄 Export Checklist to Markdown"):
+            markdown_content = generate_checklist_markdown()
+            st.download_button(
+                label="Download Checklist",
+                data=markdown_content,
+                file_name="video_analysis_checklist.md",
+                mime="text/markdown"
+            )
     
     st.subheader("Detected Mistakes & Content Mismatches (with Timestamps)")
     for ts, mistake in mistakes:
@@ -1051,7 +1315,7 @@ if submit_button and uploaded_file is not None:
         
         try:
             with st.spinner("Analyzing reference video from URL... (may take up to 3 minutes)"):
-                comparison = compare_videos_with_url(temp_video_path, reference_url.strip(), description, cut_sensitivity, bleed_tolerance, flash_min_duration)
+                comparison = compare_videos_with_url(temp_video_path, reference_url.strip(), description, cut_sensitivity, bleed_tolerance, flash_min_duration, always_on_text, max_bleed_ignore_duration)
             
             # Display comparison results
             col1, col2 = st.columns(2)
@@ -1083,6 +1347,7 @@ if submit_button and uploaded_file is not None:
                 st.write(f"- **Freeze instances:** {len(uploaded_results['freeze_frames'])}")
                 st.write(f"- **Text elements:** {len(uploaded_results['all_texts'])}")
                 st.write(f"- **Text errors:** {len(uploaded_results['text_mistakes'])}")
+                st.write(f"- **Grammar errors:** {len(uploaded_results.get('grammar_mistakes', []))}")
                 st.write(f"- **Text bleed issues:** {len(uploaded_results.get('text_bleed_mistakes', []))}")
                 st.write(f"- **Text flash issues:** {len(uploaded_results.get('text_flash_mistakes', []))}")
                 
