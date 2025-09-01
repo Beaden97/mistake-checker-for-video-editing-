@@ -8,16 +8,11 @@ from paddleocr import PaddleOCR
 from spellchecker import SpellChecker
 import os
 
+# Set page configuration with title
+st.set_page_config(page_title="Let Me Be Your Eyes for Video Editing Mistakes")
+
 # --- INSTRUCTIONS SECTION ---
-st.markdown(
-    """
-    <style>
-        .stApp {background-color: #800080;}
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-st.title("AI TikTok Video QA (Deep Learning, Web-Based, No Install)")
+st.title("Let Me Be Your Eyes for Video Editing Mistakes")
 st.markdown("""
 #### How to Use This App
 1. **Upload your TikTok video below.**
