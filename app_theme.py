@@ -12,7 +12,7 @@ _LOGO_PATHS = [
     _ASSETS_DIR / "favicon.png",
 ]
 
-_DEFAULT_TITLE = "AI TikTok Video QA (Deep Learning, Web-Based, No Install)"
+_DEFAULT_TITLE = "The Video Editing Mistake Checker"
 
 def _first_existing_logo() -> str | None:
     for p in _LOGO_PATHS:
@@ -38,16 +38,16 @@ def apply_base_theme(
     # Load base CSS
     if _CSS_PATH.exists():
         css = _CSS_PATH.read_text(encoding="utf-8")
-        st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+        st.markdown(f"<style>{{css}}</style>", unsafe_allow_html=True)
 
     # Hide default Streamlit chrome (non-destructive)
     st.markdown(
         """
         <style>
         /* Hide the Streamlit menu and footer for a cleaner look */
-        [data-testid="stToolbar"] { display: none !important; }
-        #MainMenu { visibility: hidden; }
-        footer { visibility: hidden; }
+        [data-testid="stToolbar"] {{ display: none !important; }}
+        #MainMenu {{ visibility: hidden; }}
+        footer {{ visibility: hidden; }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -115,17 +115,17 @@ def apply_runtime_theme_controls():
         st.markdown(
             """
             <style>
-            .block-container { max-width: var(--content-max-width) !important; padding-top: var(--pad-main) !important; }
-            [data-testid="stSidebar"] .block-container { padding-top: var(--pad-sidebar) !important; }
+            .block-container {{ max-width: var(--content-max-width) !important; padding-top: var(--pad-main) !important; }}
+            [data-testid="stSidebar"] .block-container {{ padding-top: var(--pad-sidebar) !important; }}
             </style>
             """,
             unsafe_allow_html=True,
         )
 
-        return {
+        return {{
             "theme_mode": theme_mode,
             "brand": brand,
             "density": density,
             "max_width": max_width,
             "hero_title": hero_title,
-        }
+        }}
