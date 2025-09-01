@@ -19,9 +19,12 @@ apply_base_theme(page_title="Mistake Checker", page_icon=None)
 _appearance = apply_runtime_theme_controls()
 
 # --- INSTRUCTIONS SECTION ---
-_default_hero = "AI TikTok Video QA (Deep Learning, Web-Based, No Install)"
+_default_hero = "The Video Editing Mistake Checker"
 hero_title = (_appearance or {}).get("hero_title", _default_hero)
 st.title(hero_title)
+st.markdown("""
+Hi! Are you a clumsy video editor who often misses small mistakes on projects? I have inattentive adhd, and I created this tool to help spot the little, clumsy mistakes for our work before it gets sent out to that big boss or client. I often feel rubbish about myself because I send out projects with mistakes I've missed. I'm hoping this little app will help us all feel more confident in the work we produce.
+""")
 st.markdown("""
 #### How to Use This App
 1. **Upload your TikTok video below.**

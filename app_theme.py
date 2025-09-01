@@ -12,7 +12,7 @@ _LOGO_PATHS = [
     _ASSETS_DIR / "favicon.png",
 ]
 
-_DEFAULT_TITLE = "AI TikTok Video QA (Deep Learning, Web-Based, No Install)"
+_DEFAULT_TITLE = "The Video Editing Mistake Checker"
 
 def _first_existing_logo() -> str | None:
     for p in _LOGO_PATHS:
