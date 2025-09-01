@@ -1,9 +1,9 @@
 streamlit
-opencv-python
+opencv-python-headless
 numpy
 scenedetect
 paddleocr
 pyspellchecker
-pytube
 requests
 paddlepaddle
+yt-dlp
