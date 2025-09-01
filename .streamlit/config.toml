@@ -1,5 +1,6 @@
 [server]
-maxUploadSize = 2048
+# Increase max upload size to ~1 GB (adjust as needed)
+maxUploadSize = 1024
 
 [theme]
 primaryColor="#7C3AED"
