@@ -9,14 +9,6 @@ from spellchecker import SpellChecker
 import os
 
 # --- INSTRUCTIONS SECTION ---
-st.markdown(
-    """
-    <style>
-        .stApp {background-color: #800080;}
-    </style>
-    """,
-    unsafe_allow_html=True
-)
 st.title("AI TikTok Video QA (Deep Learning, Web-Based, No Install)")
 st.markdown("""
 #### How to Use This App
