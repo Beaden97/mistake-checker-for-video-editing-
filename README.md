@@ -40,6 +40,43 @@ The app automatically detects and uses logo files if present in the `assets/` di
 4. Click **Analyze Video** to get AI-powered analysis
 5. **Customize appearance** using the sidebar controls as needed
 
+## Email Feedback Configuration
+
+The app includes a feedback widget that allows users to send feedback directly via email. To enable this feature:
+
+### Setting Up SMTP
+
+1. **Configure SMTP settings** in your `.streamlit/secrets.toml` file:
+   ```toml
+   [smtp]
+   host = "your-smtp-server.com"
+   port = 587
+   user = "your-username"
+   password = "your-password"
+   from = "sender@example.com"
+   to = "feedback@example.com"
+   use_tls = true
+   ```
+
+2. **Use the provided examples** in `.streamlit/secrets.example.toml` for:
+   - **Gmail**: Use App Passwords (not regular password)
+   - **Microsoft 365**: Business/enterprise accounts
+   - **SendGrid**: Reliable third-party service
+
+### Testing Your Configuration
+
+1. Visit the **Email Diagnostics** page in the app sidebar
+2. Check your configuration status
+3. Send a test email to verify everything works
+4. Review any error messages and helpful troubleshooting hints
+
+### Security Notes
+
+- Never commit real credentials to source control
+- Use environment variables or Streamlit Cloud secrets for production
+- For Gmail, use App Passwords instead of your regular password
+- Ensure your SMTP provider allows the configured sender address
+
 ## Customization
 
 ### Changing the Default Title
