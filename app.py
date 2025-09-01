@@ -8,7 +8,7 @@ from paddleocr import PaddleOCR
 from spellchecker import SpellChecker
 import os
 import requests
-from pytube import YouTube
+import yt_dlp
 from urllib.parse import urlparse
 import re
 
@@ -146,6 +146,8 @@ def detect_flicker(video_path, threshold=40):
 def detect_freeze(video_path, freeze_threshold=0.99, min_freeze_duration=20):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0:
+        fps = 30  # Default fallback to prevent division by zero
     prev_frame = None
     freeze_start = None
     freeze_timestamps = []
@@ -166,14 +168,14 @@ def detect_freeze(video_path, freeze_threshold=0.99, min_freeze_duration=20):
                     freeze_count += 1
             else:
                 if freeze_start is not None and freeze_count >= min_freeze_duration:
-                    timestamp = int(freeze_start // fps)
+                    timestamp = int(freeze_start // fps) if fps > 0 else 0
                     freeze_timestamps.append(f"{timestamp//60:02d}:{timestamp%60:02d}")
                 freeze_start = None
                 freeze_count = 0
         prev_frame = gray
         frame_idx += 1
     if freeze_start is not None and freeze_count >= min_freeze_duration:
-        timestamp = int(freeze_start // fps)
+        timestamp = int(freeze_start // fps) if fps > 0 else 0
         freeze_timestamps.append(f"{timestamp//60:02d}:{timestamp%60:02d}")
     cap.release()
     return list(set(freeze_timestamps))
@@ -220,163 +222,269 @@ def spell_check_texts(video_path, ocr, spell, n_samples=5):
     return mistakes, all_texts
 
 def compare_to_notes(all_texts, description):
-    # Very basic notes comparison: check if all main keywords from notes appear in video text
-    notes_words = [w.lower() for w in description.split() if w.isalpha() and len(w) > 3]
-    video_words = set([w.lower() for t in all_texts for w in t.split() if w.isalpha()])
-    missing = [w for w in notes_words if w not in video_words]
-    if missing:
-        return f"Content Mismatch: The following expected keywords from your notes were NOT found in the video text: {', '.join(missing)}"
-    return "No obvious content mismatches between your notes and the video text detected."
+    """Compare video text to notes with stricter verification for explicit text directives."""
+    # First check if there are explicit text directives with positional/time cues
+    expected_texts = parse_expected_texts(description)
+    
+    if not expected_texts:
+        return "No explicit on-screen text directives to verify."
+    
+    # Check if expected texts appear in video
+    video_text_combined = ' '.join(all_texts).lower()
+    missing_texts = []
+    
+    for expected in expected_texts:
+        if expected.lower() not in video_text_combined:
+            missing_texts.append(expected)
+    
+    if missing_texts:
+        return f"Content Mismatch: The following expected texts from your notes were NOT found in the video: {', '.join(missing_texts)}"
+    
+    return "All explicit text directives from your notes were found in the video text."
 
-def download_video_from_url(url):
-    """Download video from URL (YouTube or direct link) and return local path."""
-    try:
-        # Check if it's a YouTube URL
-        if "youtube.com" in url or "youtu.be" in url:
-            # Use pytube for YouTube videos
-            yt = YouTube(url)
-            # Get the highest quality mp4 stream
-            stream = yt.streams.filter(file_extension='mp4').get_highest_resolution()
-            if not stream:
-                # Fallback to any available stream
-                stream = yt.streams.first()
-            
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
-                stream.download(output_path=os.path.dirname(temp_file.name), filename=os.path.basename(temp_file.name))
-                return temp_file.name
-        else:
-            # Direct video link - use requests
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
-            
-            # Check if it's actually a video file
-            content_type = response.headers.get('content-type', '')
-            if not content_type.startswith('video/'):
-                # Try to guess from URL extension
-                parsed_url = urlparse(url)
-                if not any(parsed_url.path.lower().endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.mkv']):
-                    raise ValueError("URL does not appear to point to a video file")
-            
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
-                for chunk in response.iter_content(chunk_size=8192):
-                    temp_file.write(chunk)
-                return temp_file.name
-                
-    except Exception as e:
-        raise Exception(f"Failed to download video from URL: {str(e)}")
+def is_photo_compilation(description: str) -> bool:
+    """Check if the description indicates a photo slideshow/compilation."""
+    keywords = ['photo', 'slideshow', 'gallery', 'ctto', 'compilation']
+    desc_lower = description.lower()
+    return any(keyword in desc_lower for keyword in keywords)
 
-def get_video_analysis_results_from_url(video_url, description):
-    """Get detailed analysis results for a video from URL (used for comparison)."""
-    results = {}
+def parse_expected_texts(description: str) -> list:
+    """Extract explicit on-screen text directives with positional/time cues."""
+    # Look for text with explicit positional or time markers
+    patterns = [
+        r'at\s+\d+:\d+.*?["\']([^"\']+)["\']',  # "at 00:30 shows 'text'"
+        r'["\']([^"\']+)["\'].*?at\s+\d+:\d+',  # "'text' appears at 00:30"
+        r'(start|beginning|middle|end).*?["\']([^"\']+)["\']',  # "start shows 'text'"
+        r'["\']([^"\']+)["\'].*(start|beginning|middle|end)',  # "'text' at the start"
+        r'caption[s]?\s*["\']([^"\']+)["\']',  # "caption 'text'"
+        r'text[s]?\s*["\']([^"\']+)["\']',     # "text 'Welcome!'"
+        r'displays?\s*["\']([^"\']+)["\']',    # "displays 'Thanks'"
+        r'shows?\s*["\']([^"\']+)["\']',       # "shows 'Welcome'"
+    ]
     
-    # Create a temporary VideoCapture object from URL
-    cap = cv2.VideoCapture(video_url)
-    
-    if not cap.isOpened():
-        raise Exception(f"Could not open video from URL: {video_url}")
-    
-    try:
-        # For URL-based videos, we'll do a simplified analysis
-        # Aspect ratio analysis
-        ret, frame = cap.read()
-        if ret:
-            h, w = frame.shape[:2]
-            ratio = w / h
-            if not (0.55 < ratio < 0.6):  # 9:16 is ~0.5625
-                results['aspect_ratio'] = f"Aspect ratio is not TikTok vertical (9:16), got {w}:{h}"
+    expected_texts = []
+    for pattern in patterns:
+        matches = re.finditer(pattern, description, re.IGNORECASE)
+        for match in matches:
+            # Extract the text part (group 1 or 2 depending on pattern)
+            if len(match.groups()) >= 2:
+                text = match.group(1) if match.group(1) else match.group(2)
             else:
-                results['aspect_ratio'] = None
-        else:
-            results['aspect_ratio'] = "Could not read video frame"
-        
-        # For streaming videos, we'll do basic analysis only
-        # Scene detection is complex for streaming, so we'll skip it
-        results['scenes'] = []
-        results['short_scenes'] = []
-        
-        # Basic frame analysis - sample a few frames
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        
-        black_frames = []
-        flicker_frames = []
-        freeze_frames = []
-        
-        # Sample 5 frames for basic analysis
-        sample_indices = np.linspace(0, max(frame_count-1, 0), num=min(5, frame_count), dtype=int)
-        prev_mean = None
-        prev_frame = None
-        
-        for idx in sample_indices:
+                text = match.group(1)
+            if text and len(text.strip()) > 2:
+                expected_texts.append(text.strip())
+    
+    return list(set(expected_texts))  # Remove duplicates
+
+def detect_title_text(video_path, ocr, start_seconds=3, sample_frames=8, size_ratio_threshold=1.4, min_height_ratio=0.03):
+    """Detect title text in the opening frames of the video."""
+    if ocr is None:
+        return {'found': False, 'text': '', 'confidence': 0}
+    
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0:
+        fps = 30  # Default fallback
+    
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if frame_height <= 0:
+        cap.release()
+        return {'found': False, 'text': '', 'confidence': 0}
+    
+    max_frame = int(start_seconds * fps)
+    title_candidates = {}
+    
+    try:
+        for i in range(sample_frames):
+            frame_idx = int(i * max_frame / sample_frames)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+                
+            img_path = f"title_frame_{frame_idx}.jpg"
+            cv2.imwrite(img_path, frame)
+            
+            try:
+                ocr_results = ocr.ocr(img_path)
+                if ocr_results:
+                    frame_text_heights = []
+                    for line in ocr_results:
+                        if line:
+                            for text_info in line:
+                                if text_info and len(text_info) >= 2:
+                                    bbox = text_info[0]
+                                    text = text_info[1][0] if isinstance(text_info[1], tuple) else text_info[1]
+                                    
+                                    # Calculate text height from bounding box
+                                    if len(bbox) >= 4:
+                                        y_coords = [point[1] for point in bbox]
+                                        text_height = max(y_coords) - min(y_coords)
+                                        frame_text_heights.append(text_height)
+                                        
+                                        # Check if this text is significantly larger
+                                        text_height_ratio = text_height / frame_height
+                                        if (text_height_ratio > min_height_ratio and 
+                                            len(text.strip()) > 2 and 
+                                            text_height > np.median(frame_text_heights) * size_ratio_threshold):
+                                            
+                                            if text in title_candidates:
+                                                title_candidates[text] += 1
+                                            else:
+                                                title_candidates[text] = 1
+                
+                os.remove(img_path)
+            except Exception:
+                try:
+                    os.remove(img_path)
+                except:
+                    pass
+                continue
+    finally:
+        cap.release()
+    
+    if title_candidates:
+        # Return the most voted title
+        best_title = max(title_candidates, key=title_candidates.get)
+        confidence = title_candidates[best_title] / sample_frames
+        return {'found': True, 'text': best_title, 'confidence': confidence}
+    
+    return {'found': False, 'text': '', 'confidence': 0}
+
+def detect_credit_lines_and_typos(video_path, ocr, spell):
+    """Detect credit lines and check for typos in them."""
+    result = {
+        'found': False,
+        'lines': [],
+        'mistakes': [],
+        'best_line': '',
+        'timestamps': []
+    }
+    
+    if ocr is None or spell is None:
+        return result
+    
+    cap = cv2.VideoCapture(video_path)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0:
+        fps = 30  # Default fallback
+    
+    credit_keywords = ['credit', 'credits', 'credit to', 'credit:', 'ctto']
+    credit_lines = []
+    credit_timestamps = []
+    
+    try:
+        # Sample 10 frames throughout the video
+        for idx in np.linspace(0, max(frame_count-1, 0), num=10, dtype=int):
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ret, frame = cap.read()
             if not ret:
                 continue
                 
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            mean_brightness = np.mean(gray)
+            img_path = f"credit_frame_{idx}.jpg"
+            cv2.imwrite(img_path, frame)
             
-            # Check for black frames
-            if mean_brightness < 15:
-                timestamp = int(idx // fps) if fps > 0 else 0
-                black_frames.append(f"{timestamp//60:02d}:{timestamp%60:02d}")
-            
-            # Check for flicker
-            if prev_mean is not None and abs(mean_brightness - prev_mean) > 40:
-                timestamp = int(idx // fps) if fps > 0 else 0
-                flicker_frames.append(f"{timestamp//60:02d}:{timestamp%60:02d}")
-            
-            # Check for freeze (simplified)
-            if prev_frame is not None:
-                similarity = np.corrcoef(prev_frame.flatten(), gray.flatten())[0,1]
-                if similarity > 0.99:
-                    timestamp = int(idx // fps) if fps > 0 else 0
-                    freeze_frames.append(f"{timestamp//60:02d}:{timestamp%60:02d}")
-            
-            prev_mean = mean_brightness
-            prev_frame = gray
-        
-        results['black_frames'] = list(set(black_frames))
-        results['flicker_frames'] = list(set(flicker_frames))
-        results['freeze_frames'] = list(set(freeze_frames))
-        
-        # For OCR analysis on streaming video, we'll do a very basic check
-        # Sample 2 frames for text analysis
-        text_mistakes = []
-        all_texts = []
-        
-        if ocr is not None:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_count // 2)  # Middle frame
-            ret, frame = cap.read()
-            if ret:
-                img_path = f"temp_stream_frame.jpg"
-                cv2.imwrite(img_path, frame)
+            try:
+                ocr_results = ocr.ocr(img_path)
+                if ocr_results:
+                    for line in ocr_results:
+                        if line:
+                            for text_info in line:
+                                if text_info and len(text_info) >= 2:
+                                    text = text_info[1][0] if isinstance(text_info[1], tuple) else text_info[1]
+                                    text_lower = text.lower()
+                                    
+                                    # Check if any credit keyword is in this text
+                                    if any(keyword in text_lower for keyword in credit_keywords):
+                                        credit_lines.append(text)
+                                        timestamp = int(idx / fps) if fps > 0 else 0
+                                        credit_timestamps.append(f"{timestamp//60:02d}:{timestamp%60:02d}")
+                
+                os.remove(img_path)
+            except Exception:
                 try:
-                    ocr_results = ocr.ocr(img_path)
-                    if ocr_results:
-                        texts = [l[1][0] for line in ocr_results if line for l in line if l]
-                        all_texts.extend(texts)
-                        
-                        # Basic spell check
-                        if texts and spell:
-                            words = []
-                            for text in texts:
-                                words.extend([w for w in text.split() if w.isalpha()])
-                            misspelled = spell.unknown(words)
-                            for word in misspelled:
-                                text_mistakes.append(("Stream sample", f"Potential typo: '{word}'"))
-                    
                     os.remove(img_path)
-                except Exception:
-                    pass  # Skip OCR errors for streaming
-        
-        results['text_mistakes'] = text_mistakes
-        results['all_texts'] = all_texts
-        
+                except:
+                    pass
+                continue
     finally:
         cap.release()
     
-    return results
+    if credit_lines:
+        result['found'] = True
+        result['lines'] = credit_lines
+        result['timestamps'] = credit_timestamps
+        result['best_line'] = max(credit_lines, key=len) if credit_lines else ''
+        
+        # Spell check the credit lines
+        for i, line in enumerate(credit_lines):
+            # Filter out URLs, @handles, hashtags, and alphanumeric tokens
+            words = []
+            for word in line.split():
+                word_clean = re.sub(r'[^\w]', '', word)
+                if (not word.startswith(('http', 'www', '@', '#')) and 
+                    word_clean.isalpha() and 
+                    len(word_clean) > 2):
+                    words.append(word_clean.lower())
+            
+            if words:
+                misspelled = spell.unknown(words)
+                for word in misspelled:
+                    correction = spell.correction(word)
+                    if correction and correction != word:
+                        mistake_msg = f"Credit text possible typo: '{word}' → '{correction}'"
+                        timestamp = credit_timestamps[i] if i < len(credit_timestamps) else "Credit"
+                        result['mistakes'].append((timestamp, mistake_msg))
+    
+    return result
+
+def download_video_from_url(url):
+    """Download video from URL (YouTube, TikTok, etc.) using yt-dlp and return local path."""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
+            temp_path = temp_file.name
+        
+        # Configure yt-dlp options
+        ydl_opts = {
+            'outtmpl': temp_path.replace('.mp4', '.%(ext)s'),
+            'format': 'best[ext=mp4]/best',  # Prefer mp4, fallback to best available
+            'noplaylist': True,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+            
+        # Find the downloaded file (it might have a different extension)
+        base_path = temp_path.replace('.mp4', '')
+        for ext in ['.mp4', '.webm', '.mkv', '.mov']:
+            potential_path = base_path + ext
+            if os.path.exists(potential_path):
+                return potential_path
+                
+        # If no file found, fallback to original temp_path
+        if os.path.exists(temp_path):
+            return temp_path
+            
+        raise Exception("Downloaded file not found")
+                
+    except Exception as e:
+        raise Exception(f"Failed to download video from URL: {str(e)}")
+
+def get_video_analysis_results_from_url(video_url, description):
+    """Get detailed analysis results for a video from URL by downloading it locally first."""
+    # Download the video locally
+    local_video_path = download_video_from_url(video_url)
+    
+    try:
+        # Run the same analysis pipeline as for uploaded videos
+        return get_video_analysis_results(local_video_path, description)
+    finally:
+        # Clean up the downloaded file
+        try:
+            os.remove(local_video_path)
+        except:
+            pass
 
 def compare_videos_with_url(video1_path, video2_url, description):
     """Compare uploaded video (file path) with reference video (URL)."""
@@ -467,13 +575,26 @@ def get_video_analysis_results(video_path, description):
     # Flicker detection
     results['flicker_frames'] = detect_flicker(video_path)
     
-    # Freeze detection
-    results['freeze_frames'] = detect_freeze(video_path)
+    # Freeze detection - suppress if photo compilation
+    if is_photo_compilation(description):
+        results['freeze_frames'] = []  # Suppress freeze detection for photo compilations
+    else:
+        results['freeze_frames'] = detect_freeze(video_path)
     
     # OCR & spell check
     text_mistakes, all_texts = spell_check_texts(video_path, ocr, spell)
     results['text_mistakes'] = text_mistakes
     results['all_texts'] = all_texts
+    
+    # Title detection
+    title_result = detect_title_text(video_path, ocr)
+    results['title_text'] = title_result['text'] if title_result['found'] else ''
+    
+    # Credit detection
+    credit_result = detect_credit_lines_and_typos(video_path, ocr, spell)
+    results['credit_detected'] = credit_result['found']
+    results['credit_text'] = credit_result['best_line']
+    results['credit_text_mistakes'] = credit_result['mistakes']
     
     return results
 
@@ -565,13 +686,18 @@ def analyze_video(video_path, description):
     flicker_ts = detect_flicker(video_path)
     for ts in flicker_ts:
         mistakes.append((ts, "Flicker/flash detected"))
-    # Freeze detection
-    freeze_ts = detect_freeze(video_path)
-    for ts in freeze_ts:
-        mistakes.append((ts, "Frozen frame or video freeze detected"))
+    # Freeze detection - suppress if photo compilation
+    if not is_photo_compilation(description):
+        freeze_ts = detect_freeze(video_path)
+        for ts in freeze_ts:
+            mistakes.append((ts, "Frozen frame or video freeze detected"))
     # OCR & spell check
     text_mistakes, all_texts = spell_check_texts(video_path, ocr, spell)
     for ts, msg in text_mistakes:
+        mistakes.append((ts, msg))
+    # Credit detection and spell check
+    credit_result = detect_credit_lines_and_typos(video_path, ocr, spell)
+    for ts, msg in credit_result['mistakes']:
         mistakes.append((ts, msg))
     # Compare to notes
     notes_mismatch = compare_to_notes(all_texts, description)
@@ -594,6 +720,29 @@ if submit_button and uploaded_file is not None:
     st.subheader("Detected Mistakes & Content Mismatches (with Timestamps)")
     for ts, mistake in mistakes:
         st.write(f"**[{ts}]** {mistake}")
+    
+    # Get detailed analysis results for additional info display
+    detailed_results = get_video_analysis_results(temp_video_path, description)
+    
+    # Show detected title and credit information
+    st.markdown("---")
+    st.subheader("📋 Additional Analysis Results")
+    
+    # Title detection
+    if detailed_results.get('title_text'):
+        st.write(f"**🎬 Detected Title:** {detailed_results['title_text']}")
+    
+    # Credit detection
+    if detailed_results.get('credit_detected', False):
+        st.write(f"**✅ Credit Detected:** {detailed_results.get('credit_text', 'Found credit text')}")
+        if detailed_results.get('credit_text_mistakes'):
+            st.write("**Credit Text Issues:**")
+            for ts, mistake in detailed_results['credit_text_mistakes']:
+                st.write(f"  - **[{ts}]** {mistake}")
+    
+    # Photo compilation info
+    if is_photo_compilation(description):
+        st.write("**📸 Photo Compilation Detected:** Freeze detection suppressed for slideshow content")
     
     # If reference video URL is provided, do comparison using URL directly
     if reference_url and reference_url.strip():
@@ -633,6 +782,8 @@ if submit_button and uploaded_file is not None:
                 st.write(f"- **Freeze instances:** {len(uploaded_results['freeze_frames'])}")
                 st.write(f"- **Text elements:** {len(uploaded_results['all_texts'])}")
                 st.write(f"- **Text errors:** {len(uploaded_results['text_mistakes'])}")
+                st.write(f"- **Title text:** {uploaded_results.get('title_text', 'None detected')}")
+                st.write(f"- **Credit text:** {uploaded_results.get('credit_text', 'None detected') if uploaded_results.get('credit_detected', False) else 'None detected'}")
                 
                 st.markdown("#### Reference Video Analysis:")
                 reference_results = comparison['reference']
@@ -642,6 +793,8 @@ if submit_button and uploaded_file is not None:
                 st.write(f"- **Freeze instances:** {len(reference_results['freeze_frames'])}")
                 st.write(f"- **Text elements:** {len(reference_results['all_texts'])}")
                 st.write(f"- **Text errors:** {len(reference_results['text_mistakes'])}")
+                st.write(f"- **Title text:** {reference_results.get('title_text', 'None detected')}")
+                st.write(f"- **Credit text:** {reference_results.get('credit_text', 'None detected') if reference_results.get('credit_detected', False) else 'None detected'}")
         
         except Exception as e:
             st.error(f"Failed to analyze reference video: {str(e)}")
