@@ -4,3 +4,5 @@ numpy
 scenedetect
 paddleocr
 pyspellchecker
+yt-dlp
+paddlepaddle
