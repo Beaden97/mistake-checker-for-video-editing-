@@ -579,7 +579,7 @@ def analyze_video(video_path, description):
     return mistakes if mistakes else [("00:00", "No obvious mistakes detected.")]
 
 # --- MAIN LOGIC ---
-if submit_button and uploaded_file is not None:
+if submit_button and can_submit:
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_video:
         temp_video.write(uploaded_file.read())
         temp_video_path = temp_video.name
