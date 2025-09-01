@@ -8,7 +8,7 @@ from paddleocr import PaddleOCR
 from spellchecker import SpellChecker
 import os
 import requests
-from pytube import YouTube
+import yt_dlp
 from urllib.parse import urlparse
 import re
 
@@ -36,10 +36,11 @@ description = st.text_area(
 st.markdown("---")
 st.subheader("Optional: Reference Video Comparison")
 reference_url = st.text_input(
-    "Enter a reference video URL (YouTube or direct video link):",
-    placeholder="https://www.youtube.com/watch?v=... or https://example.com/video.mp4",
+    "Enter a reference video URL (YouTube, TikTok, or direct video link):",
+    placeholder="https://www.tiktok.com/@user/video/... or https://www.youtube.com/watch?v=... or https://example.com/video.mp4",
     help="Provide a URL to a reference video to compare formatting and features with your uploaded video."
 )
+st.info("📌 **Note:** TikTok/YouTube links are supported via download; first run may take longer.")
 
 # --- SUBMIT BUTTON ---
 st.markdown("---")
@@ -229,154 +230,133 @@ def compare_to_notes(all_texts, description):
     return "No obvious content mismatches between your notes and the video text detected."
 
 def download_video_from_url(url):
-    """Download video from URL (YouTube or direct link) and return local path."""
+    """Download video from URL (YouTube, TikTok, or direct link) and return local path or error message."""
     try:
-        # Check if it's a YouTube URL
-        if "youtube.com" in url or "youtu.be" in url:
-            # Use pytube for YouTube videos
-            yt = YouTube(url)
-            # Get the highest quality mp4 stream
-            stream = yt.streams.filter(file_extension='mp4').get_highest_resolution()
-            if not stream:
-                # Fallback to any available stream
-                stream = yt.streams.first()
-            
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
-                stream.download(output_path=os.path.dirname(temp_file.name), filename=os.path.basename(temp_file.name))
-                return temp_file.name
+        # Parse URL to check hostname
+        parsed_url = urlparse(url)
+        hostname = parsed_url.hostname or ""
+        
+        # Check if it's a TikTok URL - use yt-dlp directly
+        if any(domain in hostname.lower() for domain in ['tiktok.com', 'm.tiktok.com']):
+            return _download_with_ytdlp(url, "TikTok")
+        
+        # Check if it's a YouTube URL - use yt-dlp directly  
+        elif any(domain in hostname.lower() for domain in ['youtube.com', 'youtu.be']):
+            return _download_with_ytdlp(url, "YouTube")
+        
+        # For other URLs, try direct download first
         else:
-            # Direct video link - use requests
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
-            
-            # Check if it's actually a video file
-            content_type = response.headers.get('content-type', '')
-            if not content_type.startswith('video/'):
-                # Try to guess from URL extension
-                parsed_url = urlparse(url)
-                if not any(parsed_url.path.lower().endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.mkv']):
-                    raise ValueError("URL does not appear to point to a video file")
-            
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
-                for chunk in response.iter_content(chunk_size=8192):
-                    temp_file.write(chunk)
-                return temp_file.name
+            try:
+                # Try direct video download first
+                response = requests.head(url, timeout=10)
+                content_type = response.headers.get('content-type', '').lower()
+                
+                # Check if it's a direct video file
+                if (content_type.startswith('video/') or 
+                    any(parsed_url.path.lower().endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.mkv', '.webm'])):
+                    return _download_direct_video(url)
+                else:
+                    # Fallback to yt-dlp for complex URLs/HTML pages
+                    return _download_with_ytdlp(url, "other")
+                    
+            except requests.RequestException:
+                # If direct request fails, try yt-dlp
+                return _download_with_ytdlp(url, "other")
                 
     except Exception as e:
-        raise Exception(f"Failed to download video from URL: {str(e)}")
+        return None, f"Failed to download video: {str(e)}"
+
+def _download_direct_video(url):
+    """Download video directly using requests."""
+    try:
+        response = requests.get(url, stream=True, timeout=30)
+        response.raise_for_status()
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    temp_file.write(chunk)
+            return temp_file.name, None
+            
+    except Exception as e:
+        return None, f"Failed to download direct video: {str(e)}"
+
+def _download_with_ytdlp(url, source_type="video"):
+    """Download video using yt-dlp."""
+    try:
+        # Create temporary file
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.%(ext)s')
+        temp_file.close()
+        
+        # Configure yt-dlp options
+        ydl_opts = {
+            'outtmpl': temp_file.name.replace('.%(ext)s', '.%(ext)s'),
+            'format': 'best[ext=mp4]/best[height<=720]/best',  # Prefer mp4, limit quality for faster download
+            'timeout': 30,
+            'extract_flat': False,
+            'no_warnings': True,
+            'quiet': True,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Extract info first to check if video exists
+            info = ydl.extract_info(url, download=False)
+            if not info:
+                return None, f"Could not extract video info from {source_type} URL"
+            
+            # Download the video
+            ydl.download([url])
+            
+            # Find the downloaded file (yt-dlp may change the extension)
+            import glob
+            pattern = temp_file.name.replace('.%(ext)s', '.*')
+            downloaded_files = glob.glob(pattern)
+            
+            if downloaded_files:
+                return downloaded_files[0], None
+            else:
+                return None, f"Video download completed but file not found for {source_type} URL"
+                
+    except yt_dlp.DownloadError as e:
+        return None, f"Failed to download {source_type} video: {str(e)}"
+    except Exception as e:
+        return None, f"Unexpected error downloading {source_type} video: {str(e)}"
 
 def get_video_analysis_results_from_url(video_url, description):
     """Get detailed analysis results for a video from URL (used for comparison)."""
     results = {}
-    
-    # Create a temporary VideoCapture object from URL
-    cap = cv2.VideoCapture(video_url)
-    
-    if not cap.isOpened():
-        raise Exception(f"Could not open video from URL: {video_url}")
+    temp_video_path = None
     
     try:
-        # For URL-based videos, we'll do a simplified analysis
-        # Aspect ratio analysis
-        ret, frame = cap.read()
-        if ret:
-            h, w = frame.shape[:2]
-            ratio = w / h
-            if not (0.55 < ratio < 0.6):  # 9:16 is ~0.5625
-                results['aspect_ratio'] = f"Aspect ratio is not TikTok vertical (9:16), got {w}:{h}"
-            else:
-                results['aspect_ratio'] = None
-        else:
-            results['aspect_ratio'] = "Could not read video frame"
+        # First, download the video to a temporary file
+        temp_video_path, error_msg = download_video_from_url(video_url)
         
-        # For streaming videos, we'll do basic analysis only
-        # Scene detection is complex for streaming, so we'll skip it
-        results['scenes'] = []
-        results['short_scenes'] = []
+        if error_msg:
+            # Return error in results instead of raising exception
+            results['error'] = error_msg
+            return results
         
-        # Basic frame analysis - sample a few frames
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
+        if not temp_video_path or not os.path.exists(temp_video_path):
+            results['error'] = "Failed to download video file"
+            return results
         
-        black_frames = []
-        flicker_frames = []
-        freeze_frames = []
+        # Now analyze the downloaded video using the existing analysis functions
+        # This gives us full analysis capabilities instead of limited streaming analysis
+        results = get_video_analysis_results(temp_video_path, description)
         
-        # Sample 5 frames for basic analysis
-        sample_indices = np.linspace(0, max(frame_count-1, 0), num=min(5, frame_count), dtype=int)
-        prev_mean = None
-        prev_frame = None
+        return results
         
-        for idx in sample_indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret, frame = cap.read()
-            if not ret:
-                continue
-                
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            mean_brightness = np.mean(gray)
-            
-            # Check for black frames
-            if mean_brightness < 15:
-                timestamp = int(idx // fps) if fps > 0 else 0
-                black_frames.append(f"{timestamp//60:02d}:{timestamp%60:02d}")
-            
-            # Check for flicker
-            if prev_mean is not None and abs(mean_brightness - prev_mean) > 40:
-                timestamp = int(idx // fps) if fps > 0 else 0
-                flicker_frames.append(f"{timestamp//60:02d}:{timestamp%60:02d}")
-            
-            # Check for freeze (simplified)
-            if prev_frame is not None:
-                similarity = np.corrcoef(prev_frame.flatten(), gray.flatten())[0,1]
-                if similarity > 0.99:
-                    timestamp = int(idx // fps) if fps > 0 else 0
-                    freeze_frames.append(f"{timestamp//60:02d}:{timestamp%60:02d}")
-            
-            prev_mean = mean_brightness
-            prev_frame = gray
-        
-        results['black_frames'] = list(set(black_frames))
-        results['flicker_frames'] = list(set(flicker_frames))
-        results['freeze_frames'] = list(set(freeze_frames))
-        
-        # For OCR analysis on streaming video, we'll do a very basic check
-        # Sample 2 frames for text analysis
-        text_mistakes = []
-        all_texts = []
-        
-        if ocr is not None:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_count // 2)  # Middle frame
-            ret, frame = cap.read()
-            if ret:
-                img_path = f"temp_stream_frame.jpg"
-                cv2.imwrite(img_path, frame)
-                try:
-                    ocr_results = ocr.ocr(img_path)
-                    if ocr_results:
-                        texts = [l[1][0] for line in ocr_results if line for l in line if l]
-                        all_texts.extend(texts)
-                        
-                        # Basic spell check
-                        if texts and spell:
-                            words = []
-                            for text in texts:
-                                words.extend([w for w in text.split() if w.isalpha()])
-                            misspelled = spell.unknown(words)
-                            for word in misspelled:
-                                text_mistakes.append(("Stream sample", f"Potential typo: '{word}'"))
-                    
-                    os.remove(img_path)
-                except Exception:
-                    pass  # Skip OCR errors for streaming
-        
-        results['text_mistakes'] = text_mistakes
-        results['all_texts'] = all_texts
+    except Exception as e:
+        results['error'] = f"Unexpected error analyzing video from URL: {str(e)}"
+        return results
         
     finally:
-        cap.release()
-    
-    return results
+        # Clean up temporary file
+        if temp_video_path and os.path.exists(temp_video_path):
+            try:
+                os.remove(temp_video_path)
+            except Exception:
+                pass  # Don't fail if cleanup fails
 
 def compare_videos_with_url(video1_path, video2_url, description):
     """Compare uploaded video (file path) with reference video (URL)."""
@@ -392,6 +372,11 @@ def compare_videos_with_url(video1_path, video2_url, description):
         'differences': [],
         'similarities': []
     }
+    
+    # Check if reference video analysis failed
+    if 'error' in reference_results:
+        comparison['reference_error'] = reference_results['error']
+        return comparison
     
     # Compare aspect ratios
     if uploaded_results['aspect_ratio'] and reference_results['aspect_ratio']:
@@ -601,50 +586,56 @@ if submit_button and uploaded_file is not None:
         st.subheader("Reference Video Comparison")
         
         try:
-            with st.spinner("Analyzing reference video from URL... (may take up to 3 minutes)"):
+            with st.spinner("Downloading and analyzing reference video... (may take up to 3 minutes)"):
                 comparison = compare_videos_with_url(temp_video_path, reference_url.strip(), description)
             
-            # Display comparison results
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("### 🔍 **Differences Found**")
-                if comparison['differences']:
-                    for diff in comparison['differences']:
-                        st.write(f"• {diff}")
-                else:
-                    st.write("No significant differences detected!")
-            
-            with col2:
-                st.markdown("### ✅ **Similarities**")
-                if comparison['similarities']:
-                    for sim in comparison['similarities']:
-                        st.write(f"• {sim}")
-                else:
-                    st.write("No notable similarities found.")
-            
-            # Detailed analysis section
-            with st.expander("📊 Detailed Analysis Results"):
-                st.markdown("#### Uploaded Video Analysis:")
-                uploaded_results = comparison['uploaded']
-                st.write(f"- **Scenes detected:** {len(uploaded_results['scenes'])}")
-                st.write(f"- **Black frames:** {len(uploaded_results['black_frames'])}")
-                st.write(f"- **Flicker instances:** {len(uploaded_results['flicker_frames'])}")
-                st.write(f"- **Freeze instances:** {len(uploaded_results['freeze_frames'])}")
-                st.write(f"- **Text elements:** {len(uploaded_results['all_texts'])}")
-                st.write(f"- **Text errors:** {len(uploaded_results['text_mistakes'])}")
+            # Check if reference video analysis failed
+            if 'reference_error' in comparison:
+                st.warning(f"⚠️ **Reference video analysis failed:** {comparison['reference_error']}")
+                st.info("Continuing with uploaded video analysis results only.")
+            else:
+                # Display comparison results
+                col1, col2 = st.columns(2)
                 
-                st.markdown("#### Reference Video Analysis:")
-                reference_results = comparison['reference']
-                st.write(f"- **Scenes detected:** {len(reference_results['scenes'])}")
-                st.write(f"- **Black frames:** {len(reference_results['black_frames'])}")
-                st.write(f"- **Flicker instances:** {len(reference_results['flicker_frames'])}")
-                st.write(f"- **Freeze instances:** {len(reference_results['freeze_frames'])}")
-                st.write(f"- **Text elements:** {len(reference_results['all_texts'])}")
-                st.write(f"- **Text errors:** {len(reference_results['text_mistakes'])}")
+                with col1:
+                    st.markdown("### 🔍 **Differences Found**")
+                    if comparison['differences']:
+                        for diff in comparison['differences']:
+                            st.write(f"• {diff}")
+                    else:
+                        st.write("No significant differences detected!")
+                
+                with col2:
+                    st.markdown("### ✅ **Similarities**")
+                    if comparison['similarities']:
+                        for sim in comparison['similarities']:
+                            st.write(f"• {sim}")
+                    else:
+                        st.write("No notable similarities found.")
+                
+                # Detailed analysis section
+                with st.expander("📊 Detailed Analysis Results"):
+                    st.markdown("#### Uploaded Video Analysis:")
+                    uploaded_results = comparison['uploaded']
+                    st.write(f"- **Scenes detected:** {len(uploaded_results['scenes'])}")
+                    st.write(f"- **Black frames:** {len(uploaded_results['black_frames'])}")
+                    st.write(f"- **Flicker instances:** {len(uploaded_results['flicker_frames'])}")
+                    st.write(f"- **Freeze instances:** {len(uploaded_results['freeze_frames'])}")
+                    st.write(f"- **Text elements:** {len(uploaded_results['all_texts'])}")
+                    st.write(f"- **Text errors:** {len(uploaded_results['text_mistakes'])}")
+                    
+                    st.markdown("#### Reference Video Analysis:")
+                    reference_results = comparison['reference']
+                    st.write(f"- **Scenes detected:** {len(reference_results['scenes'])}")
+                    st.write(f"- **Black frames:** {len(reference_results['black_frames'])}")
+                    st.write(f"- **Flicker instances:** {len(reference_results['flicker_frames'])}")
+                    st.write(f"- **Freeze instances:** {len(reference_results['freeze_frames'])}")
+                    st.write(f"- **Text elements:** {len(reference_results['all_texts'])}")
+                    st.write(f"- **Text errors:** {len(reference_results['text_mistakes'])}")
         
         except Exception as e:
-            st.error(f"Failed to analyze reference video: {str(e)}")
+            st.warning(f"⚠️ **Reference video analysis failed:** {str(e)}")
+            st.info("Continuing with uploaded video analysis results only.")
     
     # Clean up uploaded video
     os.remove(temp_video_path)
