@@ -122,10 +122,10 @@ def apply_runtime_theme_controls():
             unsafe_allow_html=True,
         )
 
-        return {{
+        return {
             "theme_mode": theme_mode,
             "brand": brand,
             "density": density,
             "max_width": max_width,
             "hero_title": hero_title,
-        }}
+        }
