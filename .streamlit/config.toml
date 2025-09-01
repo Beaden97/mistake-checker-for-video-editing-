@@ -1,2 +1,9 @@
 [server]
 maxUploadSize = 2048
+
+[theme]
+primaryColor="#7C3AED"
+backgroundColor="#0B0F19"
+secondaryBackgroundColor="#111827"
+textColor="#E5E7EB"
+font="sans serif"
