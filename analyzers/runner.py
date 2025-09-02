@@ -287,7 +287,7 @@ class AnalyzerRunner:
         # Determine if analysis was successful overall
         real_issues = []
         for analyzer_name, analyzer_result in self.results['analyzers'].items():
-            if analyzer_result['success']:
+            if analyzer_result['success'] and analyzer_result.get('result'):
                 issues = analyzer_result['result'].get('issues', [])
                 # Filter out informational issues for success determination
                 critical_issues = [
