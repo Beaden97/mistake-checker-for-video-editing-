@@ -16,3 +16,9 @@ temp/
 *.tmp
 *.temp
 frame_*.jpg
+test_video.*
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
