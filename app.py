@@ -191,7 +191,7 @@ def detect_flicker(video_path, threshold=40):
         print(f"[detect_flicker] error: {e}")
         return []
 
-def detect_freeze(video_path, freeze_threshold=0.99, min_freeze_duration=20):
+def detect_freeze(video_path, freeze_threshold=1.0, min_freeze_duration=20):
     try:
         cap = _safe_capture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
@@ -208,8 +208,10 @@ def detect_freeze(video_path, freeze_threshold=0.99, min_freeze_duration=20):
                 break
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             if prev_frame is not None:
-                similarity = np.corrcoef(prev_frame.flatten(), gray.flatten())[0,1]
-                if similarity > freeze_threshold:
+                # Use absolute difference instead of correlation to avoid NaN issues
+                diff = cv2.absdiff(prev_frame, gray)
+                mean_diff = np.mean(diff)
+                if mean_diff < freeze_threshold:  # Low difference indicates freeze
                     if freeze_start is None:
                         freeze_start = frame_idx
                         freeze_count = 1
@@ -812,6 +814,12 @@ if analyze_url_button and video_url_for_analysis.strip():
         notes_mismatch = compare_to_notes(results.get('all_texts', []), description)
         mistakes.append(("Notes Check", notes_mismatch))
         
+        # Check if we have no real issues (excluding Notes Check)
+        real_issues = [m for m in mistakes if m[0] != "Notes Check"]
+        
+        if not real_issues:
+            st.success("All good to go!!👍")
+        
         if not mistakes:
             mistakes = [("00:00", "No obvious mistakes detected.")]
         
@@ -836,7 +844,7 @@ if analyze_url_button and video_url_for_analysis.strip():
         print(f"[analyze_from_url] error: {e}")
 
 # Handle file upload analysis
-if submit_button and uploaded_file is not None:
+if submit_button and can_submit:
     temp_video_path = None
     try:
         # Preserve original file suffix for better decoder compatibility
@@ -859,6 +867,13 @@ if submit_button and uploaded_file is not None:
                 mistakes = analyze_video(temp_video_path, description)
             
             st.subheader("Detected Mistakes & Content Mismatches (with Timestamps)")
+            
+            # Check if we have no real issues (excluding Notes Check)
+            real_issues = [m for m in mistakes if m[0] != "Notes Check"]
+            
+            if not real_issues:
+                st.success("All good to go!!👍")
+            
             for ts, mistake in mistakes:
                 st.write(f"**[{ts}]** {mistake}")
 
@@ -952,5 +967,5 @@ if submit_button and uploaded_file is not None:
 
 elif not can_submit and not (analyze_url_button and video_url_for_analysis.strip()):
     st.info("Please upload a video and provide detailed notes to enable analysis, or use the URL analysis option for large files.")
-elif not (submit_button and uploaded_file is not None) and not (analyze_url_button and video_url_for_analysis.strip()):
+elif not (submit_button and can_submit) and not (analyze_url_button and video_url_for_analysis.strip()):
     st.info("Click 'Analyze Video' button to start the analysis, or use 'Analyze Video from URL' for large files.")
