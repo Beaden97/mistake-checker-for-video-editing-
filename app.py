@@ -3,6 +3,8 @@ import tempfile
 import os
 import json
 import time
+import re
+import requests
 from pathlib import Path
 from urllib.parse import urlparse
 import yt_dlp
@@ -123,9 +125,9 @@ description = st.text_area(
 # --- URL-BASED ANALYSIS ALTERNATIVE ---
 st.markdown("#### Alternative: Analyze from URL")
 video_url_for_analysis = st.text_input(
-    "Video URL (YouTube, TikTok, or direct link)",
-    placeholder="https://www.youtube.com/watch?v=... or https://example.com/video.mp4",
-    help="Use this for large files or when upload is not working"
+    "Video URL (YouTube, TikTok, Google Drive, or direct link)",
+    placeholder="https://www.youtube.com/watch?v=... or https://drive.google.com/file/d/.../view or https://example.com/video.mp4",
+    help="Supports YouTube, TikTok, Google Drive shared links, and direct video URLs. For Google Drive, make sure the link is set to 'Anyone with the link can view'"
 )
 
 # --- SUBMIT LOGIC ---
@@ -151,32 +153,101 @@ analyze_url_button = st.button(
 )
 
 
+def extract_google_drive_id(url: str) -> str:
+    """Extract file ID from Google Drive URL."""
+    patterns = [
+        r'/file/d/([a-zA-Z0-9-_]+)',
+        r'[?&]id=([a-zA-Z0-9-_]+)',
+        r'/open\?id=([a-zA-Z0-9-_]+)'
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    
+    raise ValueError("Could not extract Google Drive file ID from URL")
+
+
+def download_from_google_drive(file_id: str, destination: str) -> str:
+    """Download file from Google Drive using the file ID."""
+    session = requests.Session()
+    
+    # First request to get the download URL
+    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    response = session.get(url, stream=True)
+    
+    # Check if download warning is present (for large files)
+    if "download_warning" in response.text:
+        # Extract confirm token for large files
+        for line in response.text.split('\n'):
+            if 'confirm=' in line:
+                token_match = re.search(r'confirm=([^&]+)', line)
+                if token_match:
+                    token = token_match.group(1)
+                    url = f"https://drive.google.com/uc?export=download&confirm={token}&id={file_id}"
+                    response = session.get(url, stream=True)
+                    break
+    
+    # Download the file
+    with open(destination, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=32768):
+            if chunk:
+                f.write(chunk)
+    
+    return destination
+
+
+def is_google_drive_url(url: str) -> bool:
+    """Check if URL is a Google Drive link."""
+    drive_domains = ['drive.google.com', 'docs.google.com']
+    parsed = urlparse(url)
+    return any(domain in parsed.netloc for domain in drive_domains)
+
+
 def download_video_from_url(url: str) -> str:
-    """Download video from URL using yt-dlp."""
+    """Download video from URL using appropriate method."""
     try:
         temp_dir = tempfile.mkdtemp()
         
-        ydl_opts = {
-            'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
-            'format': 'best[height<=720]/best',  # Limit to 720p for processing
-            'quiet': True,
-            'no_warnings': True,
-        }
+        # Check if it's a Google Drive URL
+        if is_google_drive_url(url):
+            st.write("📁 Detected Google Drive link, processing...")
+            file_id = extract_google_drive_id(url)
+            
+            # Create temporary file with video extension
+            temp_file = os.path.join(temp_dir, f"gdrive_video_{file_id}.mp4")
+            download_from_google_drive(file_id, temp_file)
+            
+            if os.path.exists(temp_file) and os.path.getsize(temp_file) > 0:
+                return temp_file
+            else:
+                raise Exception("Downloaded file is empty or not found")
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
+        else:
+            # Use yt-dlp for other URLs (YouTube, TikTok, direct links, etc.)
+            st.write("🌐 Using yt-dlp for video download...")
+            ydl_opts = {
+                'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
+                'format': 'best[height<=720]/best',  # Limit to 720p for processing
+                'quiet': True,
+                'no_warnings': True,
+            }
             
-            if os.path.exists(filename):
-                return filename
-            
-            # Try to find the downloaded file
-            for file in os.listdir(temp_dir):
-                file_path = os.path.join(temp_dir, file)
-                if os.path.isfile(file_path):
-                    return file_path
-                    
-            raise Exception("Downloaded file not found")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
+                
+                if os.path.exists(filename):
+                    return filename
+                
+                # Try to find the downloaded file
+                for file in os.listdir(temp_dir):
+                    file_path = os.path.join(temp_dir, file)
+                    if os.path.isfile(file_path):
+                        return file_path
+                        
+                raise Exception("Downloaded file not found")
             
     except Exception as e:
         raise Exception(f"Failed to download video: {str(e)}")
