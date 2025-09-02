@@ -9,6 +9,7 @@ import yt_dlp
 
 from app_theme import apply_base_theme, apply_runtime_theme_controls
 from components.feedback import render_feedback_widget
+from components.checklist import render_corrections_checklist
 from analyzers.runner import AnalyzerRunner, AnalysisConfig
 from analyzers.common import is_cloud_environment, get_memory_usage
 
@@ -230,16 +231,27 @@ def display_results(results: dict):
                 issue['analyzer'] = analyzer_name
                 all_issues.append(issue)
     
-    if all_issues:
-        st.subheader("⚠️ Issues Found")
+    # Filter for critical issues (warnings and errors) for the checklist
+    critical_issues = [
+        issue for issue in all_issues 
+        if issue.get('severity') in ['warning', 'error']
+    ]
+    
+    if critical_issues:
+        # Use interactive checklist for critical issues
+        all_checked = render_corrections_checklist(critical_issues)
+        
+        # Show informational issues separately if any
+        info_issues = [issue for issue in all_issues if issue.get('severity') == 'info']
+        if info_issues:
+            with st.expander("ℹ️ Additional Information"):
+                for issue in info_issues:
+                    st.write(f"🔵 **[{issue['timestamp']}]** {issue['message']}")
+    elif all_issues:
+        # Only informational issues
+        st.subheader("ℹ️ Information")
         for issue in all_issues:
-            severity_icon = {
-                'error': '🔴',
-                'warning': '🟡', 
-                'info': '🔵'
-            }.get(issue.get('severity', 'info'), '🔵')
-            
-            st.write(f"{severity_icon} **[{issue['timestamp']}]** {issue['message']}")
+            st.write(f"🔵 **[{issue['timestamp']}]** {issue['message']}")
     else:
         st.success("No issues detected in the analysis!")
     
