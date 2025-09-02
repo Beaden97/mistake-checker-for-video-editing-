@@ -1,0 +1,1 @@
+"""Video analysis modules with fail-soft execution and timeout support."""
