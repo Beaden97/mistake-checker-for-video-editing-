@@ -32,7 +32,7 @@ def apply_base_theme(
         page_title=page_title,
         page_icon=page_icon,
         layout="wide",
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="collapsed",  # Start collapsed for mobile-friendliness
     )
 
     # Load base CSS
@@ -74,6 +74,13 @@ def apply_runtime_theme_controls():
         # Advanced: tweak page density and content width
         density = st.select_slider("Density", options=["Cozy", "Comfortable", "Compact"], value="Comfortable")
         max_width = st.slider("Content width (px)", min_value=960, max_value=1400, value=1180, step=10)
+        
+        # Mobile-friendly layout toggle
+        mobile_layout = st.toggle(
+            "Mobile-friendly layout", 
+            value=False,
+            help="Force single-column layout and mobile-optimized spacing regardless of screen size"
+        )
 
         # Theme color presets
         light_bg = "#FFFFFF"
@@ -118,15 +125,50 @@ def apply_runtime_theme_controls():
         )
 
         # Apply computed density/width
-        st.markdown(
-            """
+        base_layout_css = """
             <style>
             .block-container { max-width: var(--content-max-width) !important; padding-top: var(--pad-main) !important; }
             [data-testid="stSidebar"] .block-container { padding-top: var(--pad-sidebar) !important; }
             </style>
-            """,
-            unsafe_allow_html=True,
-        )
+            """
+        
+        # Add mobile layout CSS if toggle is enabled
+        mobile_layout_css = """
+            <style>
+            /* Force mobile layout styles when toggle is enabled */
+            .mobile-layout .row-widget.stColumns > div {
+                width: 100% !important;
+                margin-bottom: 1rem;
+            }
+            .mobile-layout .block-container {
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+                max-width: 100% !important;
+            }
+            .mobile-layout .stMarkdown, .mobile-layout .stText, .mobile-layout p, .mobile-layout div {
+                word-wrap: break-word !important;
+                overflow-wrap: break-word !important;
+                hyphens: auto !important;
+            }
+            .mobile-layout video, .mobile-layout img, .mobile-layout iframe {
+                max-width: 100% !important;
+                height: auto !important;
+            }
+            </style>
+            """ if mobile_layout else ""
+        
+        st.markdown(base_layout_css + mobile_layout_css, unsafe_allow_html=True)
+        
+        # Add mobile layout class to body if toggle is enabled
+        if mobile_layout:
+            st.markdown(
+                """
+                <script>
+                document.body.classList.add('mobile-layout');
+                </script>
+                """,
+                unsafe_allow_html=True,
+            )
 
         return {
             "theme_mode": theme_mode,
@@ -134,4 +176,5 @@ def apply_runtime_theme_controls():
             "density": density,
             "max_width": max_width,
             "hero_title": hero_title,
+            "mobile_layout": mobile_layout,
         }

@@ -58,3 +58,78 @@ h2, h3 { font-weight: 600; }
 header[data-testid="stHeader"] { background: transparent; }
 
 *:focus-visible { outline: 2px solid color-mix(in oklab, var(--brand-primary) 70%, transparent) !important; outline-offset: 2px; }
+
+/* Mobile responsive styles */
+@media (max-width: 768px) {
+  /* Force single column layout on mobile */
+  .row-widget.stColumns > div {
+    width: 100% !important;
+    margin-bottom: 1rem;
+  }
+  
+  /* Ensure text wraps and doesn't overflow */
+  .stMarkdown, .stText, p, div {
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+    hyphens: auto !important;
+  }
+  
+  /* Make sure media elements fit screen width */
+  video, img, iframe {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+  
+  /* Reduce sidebar width on mobile when expanded */
+  [data-testid="stSidebar"] {
+    min-width: 280px !important;
+    max-width: 90vw !important;
+  }
+  
+  /* Adjust padding for mobile */
+  .block-container {
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+    max-width: 100% !important;
+  }
+  
+  /* Ensure buttons are touch-friendly */
+  .stButton > button {
+    min-height: 44px !important;
+    padding: 0.75rem 1.25rem !important;
+    font-size: 16px !important; /* Prevents zoom on iOS */
+  }
+  
+  /* Make inputs touch-friendly */
+  .stTextInput > div > div > input,
+  .stTextArea textarea,
+  .stSelectbox > div > div,
+  .stNumberInput input {
+    min-height: 44px !important;
+    font-size: 16px !important; /* Prevents zoom on iOS */
+  }
+  
+  /* Fix expander headers on mobile */
+  .streamlit-expanderHeader, .st-expanderHeader {
+    font-size: 1rem !important;
+    padding: 1rem !important;
+  }
+  
+  /* Adjust status/info boxes for mobile */
+  .stAlert, .stInfo, .stSuccess, .stWarning, .stError {
+    margin: 0.5rem 0 !important;
+    padding: 0.75rem !important;
+  }
+}
+
+/* Tablet styles */
+@media (max-width: 1024px) and (min-width: 769px) {
+  [data-testid="stSidebar"] {
+    min-width: 300px !important;
+  }
+  
+  .block-container {
+    padding-left: 1.5rem !important;
+    padding-right: 1.5rem !important;
+  }
+}
