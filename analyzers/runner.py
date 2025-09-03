@@ -25,6 +25,9 @@ class AnalysisConfig:
     pre_transcode: bool = True
     frame_sampling_step: int = 1
     max_ocr_frames: int = 10
+    spell_variant: str = "US"
+    custom_words: Optional[List[str]] = None
+    min_confidence_for_spell: float = 0.4
     
     # Timeouts for each analyzer (seconds)
     timeout_aspect_ratio: int = 20
@@ -257,7 +260,10 @@ class AnalyzerRunner:
                     working_video_path,
                     max_frames=max_frames,
                     sample_step=self.config.frame_sampling_step * 10,
-                    timeout_seconds=self.config.timeout_ocr
+                    timeout_seconds=self.config.timeout_ocr,
+                    spell_variant=self.config.spell_variant,
+                    custom_words=self.config.custom_words,
+                    min_confidence_for_spell=self.config.min_confidence_for_spell
                 )
             
             # Run credit analysis

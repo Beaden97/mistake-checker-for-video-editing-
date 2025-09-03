@@ -5,8 +5,11 @@ A web-based AI tool for analyzing TikTok videos and detecting common editing mis
 ## Features
 
 - **Video Analysis**: Upload TikTok videos and get detailed analysis of potential editing mistakes
+- **Mobile-Friendly Controls**: Analysis settings available inline on mobile devices (not just sidebar)
+- **Enhanced Spell Checking**: UK/US language variants with custom dictionary support
 - **Reference Comparison**: Compare your video against reference videos from YouTube or direct links
 - **Content Verification**: Check if your video matches your detailed notes and requirements
+- **Full Error Debugging**: Complete Python tracebacks for easier troubleshooting
 - **Customizable Theming**: Clean, branded appearance with configurable themes
 
 ## Appearance Controls
@@ -34,11 +37,33 @@ The app automatically detects and uses logo files if present in the `assets/` di
 
 ## How to Use
 
-1. **Upload your TikTok video** using the file uploader
-2. **Describe your video requirements** in detail in the notes box
-3. **Optional**: Enter a reference video URL for comparison
-4. Click **Analyze Video** to get AI-powered analysis
-5. **Customize appearance** using the sidebar controls as needed
+1. **Configure analysis settings** using the mobile-friendly inline controls (available on all devices)
+2. **Upload your TikTok video** using the file uploader
+3. **Describe your video requirements** in detail in the notes box
+4. **Optional**: Enter a reference video URL for comparison
+5. Click **Analyze Video** to get AI-powered analysis
+6. **Customize appearance** using the sidebar controls as needed
+
+### Analysis Settings
+
+The inline controls provide the following options:
+
+- **Safe Mode**: Lightweight analysis with reduced timeouts (recommended for cloud environments)
+- **Deep OCR Analysis**: Enable text detection and spell checking
+- **Frame Sampling Step**: Control how many frames to skip (higher = faster but less thorough)
+- **Max OCR Frames**: Limit the number of frames analyzed for text
+- **Text Language**: Choose between English (US) and English (UK) for spell checking
+- **Custom Dictionary**: Add brand names, slang, or specialized terms that shouldn't be flagged as misspelled
+
+### Spell Checking Features
+
+- **Language Variants**: Supports both US and UK English spelling conventions
+- **Smart Tokenization**: Ignores URLs, @handles, #hashtags, and numeric tokens
+- **Custom Words**: Add your own words via the custom dictionary textarea
+- **Confidence Thresholds**: Uses lower OCR confidence thresholds when Deep OCR is enabled (0.35 vs 0.4)
+- **UK Wordlist**: Includes supplemental UK spelling words like "colour", "organise", "theatre"
+
+Note: PaddleOCR uses English ('en') language model for both US and UK variants. The language selector only affects the spell checker, not the OCR detection itself.
 
 ## Email Feedback Configuration
 
@@ -92,8 +117,22 @@ You can change the hero title in two ways:
 ## Technical Details
 
 - Built with Streamlit
-- Uses PaddleOCR for text detection
+- Uses PaddleOCR for text detection (English language model)
+- Enhanced spell checking with PySpellChecker (US/UK variants)
+- Smart text tokenization ignoring URLs, handles, hashtags
 - Scene detection with PySceneDetect
 - Video analysis with OpenCV
-- Spell checking with PySpellChecker
 - Video downloading with yt-dlp
+- Full Python traceback capture for debugging
+- Mobile-responsive controls for all screen sizes
+
+### UK Spelling Support
+
+The optional UK spelling wordlist is loaded from `assets/spell/en_GB_extra.txt` and includes common British spellings like:
+- colour, flavour, honour (vs color, flavor, honor)
+- realise, organise, specialise (vs realize, organize, specialize)  
+- centre, theatre, metre (vs center, theater, meter)
+- licence/practice (noun), license/practise (verb)
+- grey, aluminium, aeroplane (vs gray, aluminum, airplane)
+
+If the file is missing, the app continues to work normally with only US spellings.

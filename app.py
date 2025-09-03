@@ -12,6 +12,7 @@ import yt_dlp
 from app_theme import apply_base_theme, apply_runtime_theme_controls
 from components.feedback import render_feedback_widget
 from components.checklist import render_corrections_checklist
+from components.controls import render_analysis_controls
 from analyzers.runner import AnalyzerRunner, AnalysisConfig
 from analyzers.common import is_cloud_environment, get_memory_usage
 
@@ -129,6 +130,9 @@ video_url_for_analysis = st.text_input(
     placeholder="https://www.youtube.com/watch?v=... or https://drive.google.com/file/d/.../view or https://example.com/video.mp4",
     help="Supports YouTube, TikTok, Google Drive shared links, and direct video URLs. For Google Drive, make sure the link is set to 'Anyone with the link can view'"
 )
+
+# --- INLINE CONTROLS (MOBILE-FRIENDLY) ---
+controls_config = render_analysis_controls()
 
 # --- SUBMIT LOGIC ---
 can_submit = (
@@ -253,16 +257,22 @@ def download_video_from_url(url: str) -> str:
         raise Exception(f"Failed to download video: {str(e)}")
 
 
-def run_analysis(video_path: str, description: str) -> dict:
+def run_analysis(video_path: str, description: str, controls_config: dict) -> dict:
     """Run the complete analysis pipeline."""
+    # Determine min_confidence_for_spell based on Deep OCR setting
+    min_confidence = 0.35 if controls_config.get('deep_ocr', False) else 0.4
+    
     # Create analysis configuration
     config = AnalysisConfig(
-        safe_mode=safe_mode,
-        deep_ocr=deep_ocr,
-        use_scenedetect=use_scenedetect,
-        pre_transcode=pre_transcode,
-        frame_sampling_step=frame_sampling,
-        max_ocr_frames=max_ocr_frames
+        safe_mode=controls_config.get('safe_mode', safe_mode),
+        deep_ocr=controls_config.get('deep_ocr', deep_ocr),
+        use_scenedetect=use_scenedetect,  # Keep sidebar value for compatibility
+        pre_transcode=pre_transcode,  # Keep sidebar value for compatibility
+        frame_sampling_step=controls_config.get('frame_sampling_step', frame_sampling),
+        max_ocr_frames=controls_config.get('max_ocr_frames', max_ocr_frames),
+        spell_variant=controls_config.get('spell_variant', 'US'),
+        custom_words=controls_config.get('custom_words', []),
+        min_confidence_for_spell=min_confidence
     )
     
     # Run analysis
@@ -354,9 +364,32 @@ def display_results(results: dict):
                             st.write(f"- {issue['message']}")
                 else:
                     st.error(f"Analyzer failed: {analyzer_data['result'].get('error', 'Unknown error')}")
+                    # Show full traceback if available
+                    if 'error' in analyzer_data['result'] and analyzer_data['result']['error']:
+                        with st.expander("🔍 Error Traceback"):
+                            st.code(analyzer_data['result']['error'], language="python")
     
     # Debug panel
     with st.expander("🐛 Debug Panel"):
+        # Show any error traces from issues
+        error_traces = []
+        for analyzer_name, analyzer_data in results['analyzers'].items():
+            if analyzer_data['success']:
+                issues = analyzer_data['result'].get('issues', [])
+                for issue in issues:
+                    if issue.get('type') == 'error_trace':
+                        error_traces.append({
+                            'analyzer': analyzer_name,
+                            'timestamp': issue.get('timestamp', 'Unknown'),
+                            'trace': issue.get('message', '')
+                        })
+        
+        if error_traces:
+            st.write("**Error Tracebacks:**")
+            for trace in error_traces:
+                with st.expander(f"Error in {trace['analyzer']} at {trace['timestamp']}"):
+                    st.code(trace['trace'], language="python")
+        
         st.write("**Environment:**")
         st.json(results['metadata']['environment'])
         
@@ -434,7 +467,7 @@ if (submit_button and can_submit) or (analyze_url_button and video_url_for_analy
                         time.sleep(0.5)
                 
                 # Run actual analysis
-                results = run_analysis(temp_video_path, description)
+                results = run_analysis(temp_video_path, description, controls_config)
                 
                 status.update(label="✅ Analysis complete!", state="complete")
             
