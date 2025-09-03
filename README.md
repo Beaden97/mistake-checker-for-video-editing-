@@ -94,7 +94,7 @@ The AI will automatically:
 The inline controls provide the following options:
 
 - **Safe Mode**: Lightweight analysis with reduced timeouts (recommended for cloud environments)
-- **Deep OCR Analysis**: Enable text detection and spell checking
+- **Full scan**: Enable text detection and spell checking
 - **Frame Sampling Step**: Control how many frames to skip (higher = faster but less thorough)
 - **Max OCR Frames**: Limit the number of frames analyzed for text
 - **Text Language**: Choose between English (US) and English (UK) for spell checking
@@ -116,8 +116,10 @@ This makes the app more robust and easier to extend with new features.
 - **Language Variants**: Supports both US and UK English spelling conventions
 - **Smart Tokenization**: Ignores URLs, @handles, #hashtags, and numeric tokens
 - **Custom Words**: Add your own words via the custom dictionary textarea
-- **Confidence Thresholds**: Uses lower OCR confidence thresholds when Deep OCR is enabled (0.35 vs 0.4)
+- **Confidence Thresholds**: Uses lower OCR confidence thresholds when Full scan is enabled (0.35 vs 0.4)
 - **UK Wordlist**: Includes supplemental UK spelling words like "colour", "organise", "theatre"
+
+The **Full scan** option toggles a more thorough text detection pass, enabling comprehensive spell checking with lower confidence thresholds for better text detection coverage.
 
 Note: PaddleOCR uses English ('en') language model for both US and UK variants. The language selector only affects the spell checker, not the OCR detection itself.
 
