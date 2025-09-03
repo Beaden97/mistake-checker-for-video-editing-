@@ -55,6 +55,17 @@ The inline controls provide the following options:
 - **Text Language**: Choose between English (US) and English (UK) for spell checking
 - **Custom Dictionary**: Add brand names, slang, or specialized terms that shouldn't be flagged as misspelled
 
+### Configuration Compatibility
+
+The app now features **backward-compatible configuration handling**:
+
+- **Flexible Parameters**: The analysis configuration gracefully ignores unknown parameters, preventing crashes when new UI features are added
+- **Safe Defaults**: All configuration options have sensible defaults that work out-of-the-box
+- **Forward Compatibility**: New analysis features can be added without breaking existing functionality
+- **Error Prevention**: No more "unexpected keyword argument" errors when the UI sends additional parameters
+
+This makes the app more robust and easier to extend with new features.
+
 ### Spell Checking Features
 
 - **Language Variants**: Supports both US and UK English spelling conventions
