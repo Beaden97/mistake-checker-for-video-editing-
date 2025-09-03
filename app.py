@@ -258,16 +258,19 @@ def download_video_from_url(url: str) -> str:
 
 
 def run_analysis(video_path: str, description: str, controls_config: dict) -> dict:
-    """Run the complete analysis pipeline."""
+    """Run the complete analysis pipeline with mobile optimization."""
     # Determine min_confidence_for_spell based on Deep OCR setting
     min_confidence = 0.35 if controls_config.get('deep_ocr', False) else 0.4
     
+    # Apply mobile optimizations to configuration
+    mobile_optimized = controls_config.get('mobile_optimized', False)
+    
     # Create analysis configuration
     config = AnalysisConfig(
-        safe_mode=controls_config.get('safe_mode', safe_mode),
-        deep_ocr=controls_config.get('deep_ocr', deep_ocr),
-        use_scenedetect=use_scenedetect,  # Keep sidebar value for compatibility
-        pre_transcode=pre_transcode,  # Keep sidebar value for compatibility
+        safe_mode=controls_config.get('safe_mode', safe_mode) or mobile_optimized,  # Force safe mode if mobile optimized
+        deep_ocr=controls_config.get('deep_ocr', deep_ocr) and not mobile_optimized,  # Disable deep OCR on mobile optimization
+        use_scenedetect=use_scenedetect and not mobile_optimized,  # Keep sidebar value for compatibility
+        pre_transcode=pre_transcode and not mobile_optimized,  # Skip transcoding on mobile to save time/memory
         frame_sampling_step=controls_config.get('frame_sampling_step', frame_sampling),
         max_ocr_frames=controls_config.get('max_ocr_frames', max_ocr_frames),
         spell_variant=controls_config.get('spell_variant', 'US'),
@@ -369,10 +372,13 @@ def display_results(results: dict):
                         with st.expander("🔍 Error Traceback"):
                             st.code(analyzer_data['result']['error'], language="python")
     
-    # Debug panel
+    # Debug panel with enhanced OCR error reporting
     with st.expander("🐛 Debug Panel"):
         # Show any error traces from issues
         error_traces = []
+        ocr_issues = []
+        mobile_warnings = []
+        
         for analyzer_name, analyzer_data in results['analyzers'].items():
             if analyzer_data['success']:
                 issues = analyzer_data['result'].get('issues', [])
@@ -383,20 +389,69 @@ def display_results(results: dict):
                             'timestamp': issue.get('timestamp', 'Unknown'),
                             'trace': issue.get('message', '')
                         })
+                    elif issue.get('type') in ['ocr_error', 'spelling']:
+                        ocr_issues.append({
+                            'analyzer': analyzer_name,
+                            'timestamp': issue.get('timestamp', 'Unknown'),
+                            'type': issue.get('type'),
+                            'message': issue.get('message', '')
+                        })
+                    elif issue.get('type') == 'memory_warning':
+                        mobile_warnings.append({
+                            'analyzer': analyzer_name,
+                            'timestamp': issue.get('timestamp', 'Unknown'),
+                            'message': issue.get('message', '')
+                        })
         
+        # Show OCR-specific issues
+        if ocr_issues:
+            st.write("**📝 OCR Analysis Results:**")
+            for issue in ocr_issues:
+                if issue['type'] == 'spelling':
+                    st.success(f"✅ **[{issue['timestamp']}]** {issue['message']}")
+                else:
+                    st.warning(f"⚠️ **[{issue['timestamp']}]** {issue['message']}")
+        
+        # Show mobile/memory warnings
+        if mobile_warnings:
+            st.write("**📱 Mobile/Resource Warnings:**")
+            for warning in mobile_warnings:
+                st.info(f"📱 **[{warning['timestamp']}]** {warning['message']}")
+        
+        # Show error tracebacks (if any)
         if error_traces:
-            st.write("**Error Tracebacks:**")
+            st.write("**🔍 Error Tracebacks:**")
             for trace in error_traces:
                 with st.expander(f"Error in {trace['analyzer']} at {trace['timestamp']}"):
                     st.code(trace['trace'], language="python")
         
-        st.write("**Environment:**")
+        # OCR Performance Metrics
+        ocr_data = results['analyzers'].get('ocr', {})
+        if ocr_data.get('success'):
+            ocr_metadata = ocr_data['result'].get('metadata', {})
+            st.write("**📊 OCR Performance:**")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Frames Analyzed", ocr_metadata.get('frames_analyzed', 0))
+            with col2:
+                st.metric("Text Elements Found", ocr_metadata.get('total_text_elements', 0))
+            with col3:
+                st.metric("Processing Time", f"{ocr_data.get('duration', 0):.1f}s")
+            
+            # Mobile optimization status
+            if ocr_metadata.get('mobile_environment_detected'):
+                st.info("📱 Mobile environment detected - optimizations applied")
+            if ocr_metadata.get('preprocessing_applied'):
+                st.success("🔧 Frame preprocessing applied for better OCR accuracy")
+        
+        st.write("**🌍 Environment:**")
         st.json(results['metadata']['environment'])
         
-        st.write("**Configuration:**")
+        st.write("**⚙️ Configuration:**")
         st.json(results['metadata']['config'])
         
-        st.write("**Raw Results:**")
+        st.write("**📄 Raw Results:**")
         st.json(results)
     
     # Download report
