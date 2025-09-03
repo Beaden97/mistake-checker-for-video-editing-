@@ -40,7 +40,7 @@ st.markdown("""
 1. **Configure analysis settings** in the sidebar (Safe mode is recommended for Streamlit Cloud)
 2. **Upload your TikTok video** or provide a URL for analysis
 3. **Describe exactly what your video should be** in the notes box  
-4. **Click Analyze Video** to get AI-powered analysis with fail-soft execution
+4. **Click Analyze Video** to get AI-powered analysis
 5. **Download the detailed JSON report** for comprehensive results and debugging info
 
 The app now features modular analyzers with timeout protection and graceful error handling.
