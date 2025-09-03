@@ -116,15 +116,20 @@ uploaded_file = st.file_uploader(
     help="Supported formats: MP4, MOV, AVI, MKV"
 )
 
+# Example section above the text area
+st.markdown("**💡 Example Description:**")
+st.markdown("> A short dancing clip with text captions. Expected text: \"Welcome!\" : \"Follow us for more\". Look for: proper timing, text visibility, smooth transitions. Skip: freeze detection.")
+
 description = st.text_area(
     "Describe in detail what the video is supposed to be:",
-    value="A short dancing clip with text captions. Example: First 5 seconds - dancer enters from left, caption 'Welcome!' appears. Transition to close-up. Audio: upbeat pop, no silence. End with logo.",
+    value="",
     height=100,
+    placeholder="Enter your video description here...\n\nTip: Use quotes with colons for expected text: \"Step 1: Start\" : \"Step 2: Continue\"\nUse phrases like 'Look for:' or 'Skip:' for analysis instructions.",
     help="Detailed descriptions help with better analysis and Notes Check comparison"
 )
 
 # Show description parsing preview if user has entered content
-if description and description.strip() and description.strip() != "A short dancing clip with text captions. Example: First 5 seconds - dancer enters from left, caption 'Welcome!' appears. Transition to close-up. Audio: upbeat pop, no silence. End with logo.":
+if description and description.strip():
     with st.expander("🤖 AI Prompt Analysis Preview", expanded=False):
         # Import the parser here to avoid circular imports
         from analyzers.description_parser import DescriptionParser
@@ -155,7 +160,6 @@ controls_config = render_analysis_controls()
 can_submit = (
     (uploaded_file is not None or video_url_for_analysis.strip()) 
     and description.strip() 
-    and description.strip() != "A short dancing clip with text captions. Example: First 5 seconds - dancer enters from left, caption 'Welcome!' appears. Transition to close-up. Audio: upbeat pop, no silence. End with logo."
     and not st.session_state.analysis_running
 )
 

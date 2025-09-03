@@ -367,7 +367,7 @@ class AnalyzerRunner:
         Returns:
             Dictionary indicating which analyzers should run
         """
-        # Default: run all analyzers
+        # Default: run all analyzers (full scan)
         analyzers = {
             'aspect_ratio': True,
             'scenes': True,
@@ -378,12 +378,21 @@ class AnalyzerRunner:
             'credits': True
         }
         
+        # If no analysis instructions are provided, run full scan
+        if not parsed_description.analysis_instructions:
+            # Add metadata to indicate this is a full scan
+            self.results['metadata']['analysis_mode'] = 'full_scan'
+            self.results['metadata']['analysis_reason'] = 'No specific instructions provided - running comprehensive analysis'
+            return analyzers
+        
         # Check for specific instructions to skip or focus on certain analyzers
+        has_skip_instructions = False
         for instruction in parsed_description.analysis_instructions:
             instruction_lower = instruction.lower()
             
             # Skip instructions
             if 'skip' in instruction_lower or 'ignore' in instruction_lower:
+                has_skip_instructions = True
                 if 'aspect' in instruction_lower or 'ratio' in instruction_lower:
                     analyzers['aspect_ratio'] = False
                 if 'scene' in instruction_lower:
@@ -399,11 +408,18 @@ class AnalyzerRunner:
                 if 'credit' in instruction_lower:
                     analyzers['credits'] = False
         
+        # Set metadata based on instructions
+        if has_skip_instructions:
+            self.results['metadata']['analysis_mode'] = 'selective_skip'
+            self.results['metadata']['analysis_reason'] = 'User specified analyzers to skip'
+        else:
+            self.results['metadata']['analysis_mode'] = 'instructed_full_scan'
+            self.results['metadata']['analysis_reason'] = 'User provided focus instructions but no skip commands - running full analysis'
+        
         # Check focus keywords for prioritization (doesn't disable others, but could be used for optimization)
         focus_keywords = set(kw.lower() for kw in parsed_description.look_for_keywords)
-        
-        # If only specific aspects are mentioned, we could optimize by focusing on those
-        # For now, we keep all analyzers enabled but this could be enhanced
+        if focus_keywords:
+            self.results['metadata']['focus_keywords'] = list(focus_keywords)
         
         return analyzers
     
