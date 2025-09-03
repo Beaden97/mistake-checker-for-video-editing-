@@ -266,17 +266,19 @@ def run_analysis(video_path: str, description: str, controls_config: dict) -> di
     mobile_optimized = controls_config.get('mobile_optimized', False)
     
     # Create analysis configuration
-    config = AnalysisConfig(
-        safe_mode=controls_config.get('safe_mode', safe_mode) or mobile_optimized,  # Force safe mode if mobile optimized
-        deep_ocr=controls_config.get('deep_ocr', deep_ocr) and not mobile_optimized,  # Disable deep OCR on mobile optimization
-        use_scenedetect=use_scenedetect and not mobile_optimized,  # Keep sidebar value for compatibility
-        pre_transcode=pre_transcode and not mobile_optimized,  # Skip transcoding on mobile to save time/memory
-        frame_sampling_step=controls_config.get('frame_sampling_step', frame_sampling),
-        max_ocr_frames=controls_config.get('max_ocr_frames', max_ocr_frames),
-        spell_variant=controls_config.get('spell_variant', 'US'),
-        custom_words=controls_config.get('custom_words', []),
-        min_confidence_for_spell=min_confidence
-    )
+    config = AnalysisConfig.from_dict({
+        'safe_mode': controls_config.get('safe_mode', True) or mobile_optimized,  # Force safe mode if mobile optimized
+        'deep_ocr': controls_config.get('deep_ocr', False) and not mobile_optimized,  # Disable deep OCR on mobile optimization
+        'use_scenedetect': controls_config.get('use_scenedetect', False) and not mobile_optimized,  # Keep sidebar value for compatibility
+        'pre_transcode': controls_config.get('pre_transcode', True) and not mobile_optimized,  # Skip transcoding on mobile to save time/memory
+        'frame_sampling_step': controls_config.get('frame_sampling_step', 30),
+        'max_ocr_frames': controls_config.get('max_ocr_frames', 10),
+        'spell_variant': controls_config.get('spell_variant', 'US'),
+        'custom_words': controls_config.get('custom_words', []),
+        'min_confidence_for_spell': min_confidence,
+        # Pass through the entire controls_config to test backward compatibility
+        **controls_config
+    })
     
     # Run analysis
     runner = AnalyzerRunner(config)

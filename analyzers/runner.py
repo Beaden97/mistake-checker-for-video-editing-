@@ -5,7 +5,7 @@ import tempfile
 import os
 import json
 from typing import Dict, Any, List, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 from .common import is_cloud_environment, get_memory_usage, timeout_context
 from .aspect_ratio import analyze_aspect_ratio
@@ -38,6 +38,22 @@ class AnalysisConfig:
     timeout_ocr: int = 120
     timeout_credits: int = 30
     timeout_transcode: int = 300
+    
+    @classmethod
+    def from_dict(cls, config_dict: Dict[str, Any]) -> 'AnalysisConfig':
+        """Create AnalysisConfig from dict, ignoring unknown keys for backward compatibility."""
+        # Get all field names from dataclass
+        field_names = {f.name for f in fields(cls)}
+        
+        # Filter dict to only include known fields
+        filtered_kwargs = {k: v for k, v in config_dict.items() if k in field_names}
+        
+        return cls(**filtered_kwargs)
+    
+    def __post_init__(self):
+        """Post-initialization to ensure custom_words is never None."""
+        if self.custom_words is None:
+            self.custom_words = []
 
 
 class AnalyzerRunner:
