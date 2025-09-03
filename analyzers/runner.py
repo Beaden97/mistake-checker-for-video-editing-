@@ -14,6 +14,7 @@ from .black import analyze_black_frames
 from .flicker import analyze_flicker
 from .freeze import analyze_freeze
 from .ocr import analyze_text_ocr, analyze_credit_text
+from .description_parser import DescriptionParser, ParsedDescription
 
 
 @dataclass
@@ -206,6 +207,13 @@ class AnalyzerRunner:
         working_video_path = video_path
         temp_transcoded_path = None
         
+        # Parse the description for AI prompt-style content
+        description_parser = DescriptionParser()
+        parsed_description = description_parser.parse(description)
+        
+        # Store parsed description in metadata
+        self.results['metadata']['parsed_description'] = parsed_description.to_dict()
+        
         try:
             # Pre-transcode if enabled
             if self.config.pre_transcode:
@@ -217,49 +225,64 @@ class AnalyzerRunner:
                     self.results['metadata']['transcoded'] = False
                     self.results['metadata']['transcode_error'] = "Failed to pre-transcode"
             
+            # Determine which analyzers to run based on analysis instructions
+            should_run_analyzers = self._determine_analyzers_to_run(parsed_description)
+            
             # Run aspect ratio analysis
-            self.run_analyzer(
-                'aspect_ratio',
-                analyze_aspect_ratio,
-                working_video_path,
-                self.config.timeout_aspect_ratio
-            )
+            if should_run_analyzers.get('aspect_ratio', True):
+                self.run_analyzer(
+                    'aspect_ratio',
+                    analyze_aspect_ratio,
+                    working_video_path,
+                    self.config.timeout_aspect_ratio
+                )
             
             # Run scene analysis
-            if self.config.use_scenedetect and not self.config.safe_mode:
-                self.run_analyzer(
-                    'scenes',
-                    analyze_scenes_scenedetect,
-                    working_video_path,
-                    self.config.timeout_scenes
-                )
-            else:
-                # Use lightweight scene detection
-                self.run_analyzer(
-                    'scenes',
-                    analyze_scenes_lightweight,
-                    working_video_path,
-                    self.config.timeout_scenes
-                )
+            if should_run_analyzers.get('scenes', True):
+                if self.config.use_scenedetect and not self.config.safe_mode:
+                    self.run_analyzer(
+                        'scenes',
+                        analyze_scenes_scenedetect,
+                        working_video_path,
+                        self.config.timeout_scenes
+                    )
+                else:
+                    # Use lightweight scene detection
+                    self.run_analyzer(
+                        'scenes',
+                        analyze_scenes_lightweight,
+                        working_video_path,
+                        self.config.timeout_scenes
+                    )
             
             # Run black frame analysis
-            self.run_analyzer(
-                'black_frames',
-                analyze_black_frames,
-                working_video_path,
-                timeout_seconds=self.config.timeout_black
-            )
+            if should_run_analyzers.get('black_frames', True):
+                self.run_analyzer(
+                    'black_frames',
+                    analyze_black_frames,
+                    working_video_path,
+                    timeout_seconds=self.config.timeout_black
+                )
             
             # Run flicker analysis
-            self.run_analyzer(
-                'flicker',
-                analyze_flicker,
-                working_video_path,
-                timeout_seconds=self.config.timeout_flicker
+            if should_run_analyzers.get('flicker', True):
+                self.run_analyzer(
+                    'flicker',
+                    analyze_flicker,
+                    working_video_path,
+                    timeout_seconds=self.config.timeout_flicker
+                )
+            
+            # Run freeze analysis (skip for photo compilations or if instructed)
+            should_skip_freeze = (
+                'photo' in parsed_description.general_description.lower() or 
+                'slideshow' in parsed_description.general_description.lower() or
+                any('freeze' in keyword.lower() and 'no' in instruction.lower() 
+                    for instruction in parsed_description.analysis_instructions 
+                    for keyword in instruction.split())
             )
             
-            # Run freeze analysis (skip for photo compilations)
-            if 'photo' not in description.lower() and 'slideshow' not in description.lower():
+            if should_run_analyzers.get('freeze', True) and not should_skip_freeze:
                 self.run_analyzer(
                     'freeze',
                     analyze_freeze,
@@ -267,9 +290,18 @@ class AnalyzerRunner:
                     timeout_seconds=self.config.timeout_freeze
                 )
             
-            # Run OCR analysis if enabled
-            if self.config.deep_ocr:
+            # Run OCR analysis if enabled or if expected text is provided
+            has_expected_text = bool(parsed_description.expected_text)
+            should_run_ocr = self.config.deep_ocr or has_expected_text
+            
+            if should_run_analyzers.get('ocr', True) and should_run_ocr:
                 max_frames = 5 if self.config.safe_mode else self.config.max_ocr_frames
+                
+                # Enhance custom words with expected text
+                enhanced_custom_words = list(self.config.custom_words)
+                if parsed_description.expected_text:
+                    enhanced_custom_words.extend(parsed_description.expected_text)
+                
                 self.run_analyzer(
                     'ocr',
                     analyze_text_ocr,
@@ -278,18 +310,20 @@ class AnalyzerRunner:
                     sample_step=self.config.frame_sampling_step * 10,
                     timeout_seconds=self.config.timeout_ocr,
                     spell_variant=self.config.spell_variant,
-                    custom_words=self.config.custom_words,
-                    min_confidence_for_spell=self.config.min_confidence_for_spell
+                    custom_words=enhanced_custom_words,
+                    min_confidence_for_spell=self.config.min_confidence_for_spell,
+                    expected_text=parsed_description.expected_text  # Pass expected text for comparison
                 )
             
             # Run credit analysis
-            self.run_analyzer(
-                'credits',
-                analyze_credit_text,
-                working_video_path,
-                description,
-                self.config.timeout_credits
-            )
+            if should_run_analyzers.get('credits', True):
+                self.run_analyzer(
+                    'credits',
+                    analyze_credit_text,
+                    working_video_path,
+                    parsed_description.general_description,  # Use general description for credits
+                    self.config.timeout_credits
+                )
             
         finally:
             # Clean up transcoded file
@@ -322,6 +356,56 @@ class AnalyzerRunner:
         self.results['summary']['critical_issues_count'] = len(real_issues)
         
         return self.results
+    
+    def _determine_analyzers_to_run(self, parsed_description: ParsedDescription) -> Dict[str, bool]:
+        """
+        Determine which analyzers to run based on analysis instructions.
+        
+        Args:
+            parsed_description: Parsed description object
+            
+        Returns:
+            Dictionary indicating which analyzers should run
+        """
+        # Default: run all analyzers
+        analyzers = {
+            'aspect_ratio': True,
+            'scenes': True,
+            'black_frames': True,
+            'flicker': True,
+            'freeze': True,
+            'ocr': True,
+            'credits': True
+        }
+        
+        # Check for specific instructions to skip or focus on certain analyzers
+        for instruction in parsed_description.analysis_instructions:
+            instruction_lower = instruction.lower()
+            
+            # Skip instructions
+            if 'skip' in instruction_lower or 'ignore' in instruction_lower:
+                if 'aspect' in instruction_lower or 'ratio' in instruction_lower:
+                    analyzers['aspect_ratio'] = False
+                if 'scene' in instruction_lower:
+                    analyzers['scenes'] = False
+                if 'black' in instruction_lower:
+                    analyzers['black_frames'] = False
+                if 'flicker' in instruction_lower:
+                    analyzers['flicker'] = False
+                if 'freeze' in instruction_lower:
+                    analyzers['freeze'] = False
+                if 'text' in instruction_lower or 'ocr' in instruction_lower:
+                    analyzers['ocr'] = False
+                if 'credit' in instruction_lower:
+                    analyzers['credits'] = False
+        
+        # Check focus keywords for prioritization (doesn't disable others, but could be used for optimization)
+        focus_keywords = set(kw.lower() for kw in parsed_description.look_for_keywords)
+        
+        # If only specific aspects are mentioned, we could optimize by focusing on those
+        # For now, we keep all analyzers enabled but this could be enhanced
+        
+        return analyzers
     
     def get_json_report(self) -> str:
         """Get analysis results as JSON string."""

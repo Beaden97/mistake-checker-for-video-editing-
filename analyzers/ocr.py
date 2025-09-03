@@ -172,10 +172,70 @@ def _get_mobile_optimized_settings(max_frames: int, sample_step: int) -> tuple:
         return []
 
 
+def _check_expected_text_match(detected_text: str, expected_text: List[str], 
+                              timestamp_sec: float, result: Dict[str, Any]) -> None:
+    """
+    Check if detected text matches any expected text and report findings.
+    
+    Args:
+        detected_text: Text detected by OCR
+        expected_text: List of expected text strings
+        timestamp_sec: Timestamp of the frame
+        result: Result dictionary to add issues to
+    """
+    from difflib import SequenceMatcher
+    
+    detected_lower = detected_text.lower().strip()
+    
+    # Check for exact matches first
+    for expected in expected_text:
+        expected_lower = expected.lower().strip()
+        
+        # Exact match
+        if detected_lower == expected_lower:
+            result['issues'].append({
+                'timestamp': format_timestamp(timestamp_sec),
+                'type': 'expected_text_found',
+                'severity': 'info',
+                'message': f"✓ Expected text found: '{detected_text}'"
+            })
+            return
+        
+        # Partial match (contains)
+        if expected_lower in detected_lower or detected_lower in expected_lower:
+            result['issues'].append({
+                'timestamp': format_timestamp(timestamp_sec),
+                'type': 'expected_text_partial',
+                'severity': 'info', 
+                'message': f"⚠ Partial match for expected text: detected '{detected_text}', expected '{expected}'"
+            })
+            return
+        
+        # Fuzzy match (similar)
+        similarity = SequenceMatcher(None, detected_lower, expected_lower).ratio()
+        if similarity > 0.7:  # 70% similarity threshold
+            result['issues'].append({
+                'timestamp': format_timestamp(timestamp_sec),
+                'type': 'expected_text_similar',
+                'severity': 'info',
+                'message': f"~ Similar to expected text ({similarity:.0%}): detected '{detected_text}', expected '{expected}'"
+            })
+            return
+    
+    # No match found - could be unexpected text
+    result['issues'].append({
+        'timestamp': format_timestamp(timestamp_sec),
+        'type': 'unexpected_text',
+        'severity': 'warning',
+        'message': f"? Unexpected text detected: '{detected_text}' (not in expected list)"
+    })
+
+
 def analyze_text_ocr(video_path: str, max_frames: int = 10, sample_step: int = 30,
                     timeout_seconds: int = 120, spell_variant: str = "US", 
                     custom_words: Optional[List[str]] = None, 
-                    min_confidence_for_spell: float = 0.4) -> Dict[str, Any]:
+                    min_confidence_for_spell: float = 0.4,
+                    expected_text: Optional[List[str]] = None) -> Dict[str, Any]:
     """
     Perform OCR text analysis on video frames with enhanced spell checking and mobile optimization.
     
@@ -187,6 +247,7 @@ def analyze_text_ocr(video_path: str, max_frames: int = 10, sample_step: int = 3
         spell_variant: "US" or "UK" for spell checking
         custom_words: List of custom words to add to dictionary
         min_confidence_for_spell: Minimum OCR confidence for spell checking
+        expected_text: List of text that should appear in the video (for comparison)
         
     Returns:
         Dict with analysis results, errors, and timing info
@@ -322,6 +383,10 @@ def analyze_text_ocr(video_path: str, max_frames: int = 10, sample_step: int = 3
                                 result['text_elements'].append(text_element)
                                 all_texts.append(text.lower())
                                 
+                                # Compare with expected text if provided
+                                if expected_text:
+                                    _check_expected_text_match(text, expected_text, timestamp_sec, result)
+                                
                                 # Spell check if available
                                 if spell_checker and confidence >= min_confidence_for_spell:
                                     words = _tokenize_for_spell(text)
@@ -420,7 +485,9 @@ def analyze_text_ocr(video_path: str, max_frames: int = 10, sample_step: int = 3
                 'min_confidence_for_spell': min_confidence_for_spell,
                 'fps': fps,
                 'mobile_environment_detected': is_mobile,
-                'preprocessing_applied': True
+                'preprocessing_applied': True,
+                'expected_text_provided': bool(expected_text),
+                'expected_text_count': len(expected_text) if expected_text else 0
             }
             
     except Exception as e:

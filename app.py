@@ -123,6 +123,23 @@ description = st.text_area(
     help="Detailed descriptions help with better analysis and Notes Check comparison"
 )
 
+# Show description parsing preview if user has entered content
+if description and description.strip() and description.strip() != "A short dancing clip with text captions. Example: First 5 seconds - dancer enters from left, caption 'Welcome!' appears. Transition to close-up. Audio: upbeat pop, no silence. End with logo.":
+    with st.expander("🤖 AI Prompt Analysis Preview", expanded=False):
+        # Import the parser here to avoid circular imports
+        from analyzers.description_parser import DescriptionParser
+        
+        parser = DescriptionParser()
+        parsed_preview = parser.parse(description)
+        preview_text = parser.format_parsing_preview(parsed_preview)
+        
+        if preview_text != "No structured content detected.":
+            st.markdown(preview_text)
+            st.info("💡 **Tip:** Use quotes with colons for expected text: `\"Step 1: Start\" : \"Step 2: Continue\"` and phrases like 'Look for:' or 'Check:' for analysis instructions.")
+        else:
+            st.markdown("📝 **General description detected** - no specific instructions or expected text found.")
+            st.info("💡 **Enhanced Analysis:** Try adding expected text in quotes with colons or analysis instructions like 'Look for: audio sync, text clarity'")
+
 # --- URL-BASED ANALYSIS ALTERNATIVE ---
 st.markdown("#### Alternative: Analyze from URL")
 video_url_for_analysis = st.text_input(
@@ -343,6 +360,26 @@ def display_results(results: dict):
     
     # Analysis details
     with st.expander("📋 Detailed Analysis Results"):
+        # Show parsed description if available
+        parsed_desc = results['metadata'].get('parsed_description')
+        if parsed_desc and (parsed_desc.get('expected_text') or parsed_desc.get('analysis_instructions')):
+            with st.expander("🤖 AI Prompt Analysis"):
+                st.write("**General Description:**")
+                st.write(parsed_desc.get('general_description', 'None'))
+                
+                if parsed_desc.get('expected_text'):
+                    st.write(f"**Expected Text ({len(parsed_desc['expected_text'])} items):**")
+                    for i, text in enumerate(parsed_desc['expected_text'], 1):
+                        st.write(f"{i}. \"{text}\"")
+                
+                if parsed_desc.get('analysis_instructions'):
+                    st.write(f"**Analysis Instructions ({len(parsed_desc['analysis_instructions'])} items):**")
+                    for i, instruction in enumerate(parsed_desc['analysis_instructions'], 1):
+                        st.write(f"{i}. {instruction}")
+                
+                if parsed_desc.get('look_for_keywords'):
+                    st.write(f"**Focus Keywords:** {', '.join(parsed_desc['look_for_keywords'])}")
+        
         for analyzer_name, analyzer_data in results['analyzers'].items():
             with st.expander(f"🔍 {analyzer_name.replace('_', ' ').title()}"):
                 if analyzer_data['success']:
