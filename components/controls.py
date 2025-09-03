@@ -72,7 +72,7 @@ def render_analysis_controls() -> Dict:
         
         with col2:
             deep_ocr = st.checkbox(
-                "Deep OCR analysis",
+                "Full scan",
                 value=st.session_state.controls_deep_ocr,
                 key="controls_deep_ocr",
                 disabled=safe_mode,

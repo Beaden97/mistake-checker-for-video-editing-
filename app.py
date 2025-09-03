@@ -40,7 +40,7 @@ st.markdown("""
 1. **Configure analysis settings** in the sidebar (Safe mode is recommended for Streamlit Cloud)
 2. **Upload your TikTok video** or provide a URL for analysis
 3. **Describe exactly what your video should be** in the notes box  
-4. **Click Analyze Video** to get AI-powered analysis with fail-soft execution
+4. **Click Analyze Video** to get AI-powered analysis
 5. **Download the detailed JSON report** for comprehensive results and debugging info
 
 The app now features modular analyzers with timeout protection and graceful error handling.
@@ -66,7 +66,7 @@ with st.sidebar:
     # Advanced options
     with st.expander("🔧 Advanced Options"):
         deep_ocr = st.toggle(
-            "Deep OCR Analysis", 
+            "Full scan", 
             value=False,
             disabled=safe_mode,
             help="Enable text detection and spell checking (disabled in safe mode)"
@@ -280,7 +280,7 @@ def download_video_from_url(url: str) -> str:
 
 def run_analysis(video_path: str, description: str, controls_config: dict) -> dict:
     """Run the complete analysis pipeline with mobile optimization."""
-    # Determine min_confidence_for_spell based on Deep OCR setting
+    # Determine min_confidence_for_spell based on Full scan setting
     min_confidence = 0.35 if controls_config.get('deep_ocr', False) else 0.4
     
     # Apply mobile optimizations to configuration
@@ -289,7 +289,7 @@ def run_analysis(video_path: str, description: str, controls_config: dict) -> di
     # Create analysis configuration
     config = AnalysisConfig.from_dict({
         'safe_mode': controls_config.get('safe_mode', True) or mobile_optimized,  # Force safe mode if mobile optimized
-        'deep_ocr': controls_config.get('deep_ocr', False) and not mobile_optimized,  # Disable deep OCR on mobile optimization
+        'deep_ocr': controls_config.get('deep_ocr', False) and not mobile_optimized,  # Disable full scan on mobile optimization
         'use_scenedetect': controls_config.get('use_scenedetect', False) and not mobile_optimized,  # Keep sidebar value for compatibility
         'pre_transcode': controls_config.get('pre_transcode', True) and not mobile_optimized,  # Skip transcoding on mobile to save time/memory
         'frame_sampling_step': controls_config.get('frame_sampling_step', 30),
