@@ -116,12 +116,34 @@ uploaded_file = st.file_uploader(
     help="Supported formats: MP4, MOV, AVI, MKV"
 )
 
+# Example section above the text area
+st.markdown("**💡 Example Description:**")
+st.markdown("> A short dancing clip with text captions. Expected text: \"Welcome!\" : \"Follow us for more\". Look for: proper timing, text visibility, smooth transitions. Skip: freeze detection.")
+
 description = st.text_area(
     "Describe in detail what the video is supposed to be:",
-    value="A short dancing clip with text captions. Example: First 5 seconds - dancer enters from left, caption 'Welcome!' appears. Transition to close-up. Audio: upbeat pop, no silence. End with logo.",
+    value="",
     height=100,
+    placeholder="Enter your video description here...\n\nTip: Use quotes with colons for expected text: \"Step 1: Start\" : \"Step 2: Continue\"\nUse phrases like 'Look for:' or 'Skip:' for analysis instructions.",
     help="Detailed descriptions help with better analysis and Notes Check comparison"
 )
+
+# Show description parsing preview if user has entered content
+if description and description.strip():
+    with st.expander("🤖 AI Prompt Analysis Preview", expanded=False):
+        # Import the parser here to avoid circular imports
+        from analyzers.description_parser import DescriptionParser
+        
+        parser = DescriptionParser()
+        parsed_preview = parser.parse(description)
+        preview_text = parser.format_parsing_preview(parsed_preview)
+        
+        if preview_text != "No structured content detected.":
+            st.markdown(preview_text)
+            st.info("💡 **Tip:** Use quotes with colons for expected text: `\"Step 1: Start\" : \"Step 2: Continue\"` and phrases like 'Look for:' or 'Check:' for analysis instructions.")
+        else:
+            st.markdown("📝 **General description detected** - no specific instructions or expected text found.")
+            st.info("💡 **Enhanced Analysis:** Try adding expected text in quotes with colons or analysis instructions like 'Look for: audio sync, text clarity'")
 
 # --- URL-BASED ANALYSIS ALTERNATIVE ---
 st.markdown("#### Alternative: Analyze from URL")
@@ -138,7 +160,6 @@ controls_config = render_analysis_controls()
 can_submit = (
     (uploaded_file is not None or video_url_for_analysis.strip()) 
     and description.strip() 
-    and description.strip() != "A short dancing clip with text captions. Example: First 5 seconds - dancer enters from left, caption 'Welcome!' appears. Transition to close-up. Audio: upbeat pop, no silence. End with logo."
     and not st.session_state.analysis_running
 )
 
@@ -266,17 +287,19 @@ def run_analysis(video_path: str, description: str, controls_config: dict) -> di
     mobile_optimized = controls_config.get('mobile_optimized', False)
     
     # Create analysis configuration
-    config = AnalysisConfig(
-        safe_mode=controls_config.get('safe_mode', safe_mode) or mobile_optimized,  # Force safe mode if mobile optimized
-        deep_ocr=controls_config.get('deep_ocr', deep_ocr) and not mobile_optimized,  # Disable deep OCR on mobile optimization
-        use_scenedetect=use_scenedetect and not mobile_optimized,  # Keep sidebar value for compatibility
-        pre_transcode=pre_transcode and not mobile_optimized,  # Skip transcoding on mobile to save time/memory
-        frame_sampling_step=controls_config.get('frame_sampling_step', frame_sampling),
-        max_ocr_frames=controls_config.get('max_ocr_frames', max_ocr_frames),
-        spell_variant=controls_config.get('spell_variant', 'US'),
-        custom_words=controls_config.get('custom_words', []),
-        min_confidence_for_spell=min_confidence
-    )
+    config = AnalysisConfig.from_dict({
+        'safe_mode': controls_config.get('safe_mode', True) or mobile_optimized,  # Force safe mode if mobile optimized
+        'deep_ocr': controls_config.get('deep_ocr', False) and not mobile_optimized,  # Disable deep OCR on mobile optimization
+        'use_scenedetect': controls_config.get('use_scenedetect', False) and not mobile_optimized,  # Keep sidebar value for compatibility
+        'pre_transcode': controls_config.get('pre_transcode', True) and not mobile_optimized,  # Skip transcoding on mobile to save time/memory
+        'frame_sampling_step': controls_config.get('frame_sampling_step', 30),
+        'max_ocr_frames': controls_config.get('max_ocr_frames', 10),
+        'spell_variant': controls_config.get('spell_variant', 'US'),
+        'custom_words': controls_config.get('custom_words', []),
+        'min_confidence_for_spell': min_confidence,
+        # Pass through the entire controls_config to test backward compatibility
+        **controls_config
+    })
     
     # Run analysis
     runner = AnalyzerRunner(config)
@@ -341,6 +364,26 @@ def display_results(results: dict):
     
     # Analysis details
     with st.expander("📋 Detailed Analysis Results"):
+        # Show parsed description if available
+        parsed_desc = results['metadata'].get('parsed_description')
+        if parsed_desc and (parsed_desc.get('expected_text') or parsed_desc.get('analysis_instructions')):
+            with st.expander("🤖 AI Prompt Analysis"):
+                st.write("**General Description:**")
+                st.write(parsed_desc.get('general_description', 'None'))
+                
+                if parsed_desc.get('expected_text'):
+                    st.write(f"**Expected Text ({len(parsed_desc['expected_text'])} items):**")
+                    for i, text in enumerate(parsed_desc['expected_text'], 1):
+                        st.write(f"{i}. \"{text}\"")
+                
+                if parsed_desc.get('analysis_instructions'):
+                    st.write(f"**Analysis Instructions ({len(parsed_desc['analysis_instructions'])} items):**")
+                    for i, instruction in enumerate(parsed_desc['analysis_instructions'], 1):
+                        st.write(f"{i}. {instruction}")
+                
+                if parsed_desc.get('look_for_keywords'):
+                    st.write(f"**Focus Keywords:** {', '.join(parsed_desc['look_for_keywords'])}")
+        
         for analyzer_name, analyzer_data in results['analyzers'].items():
             with st.expander(f"🔍 {analyzer_name.replace('_', ' ').title()}"):
                 if analyzer_data['success']:
